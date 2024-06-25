@@ -9,13 +9,16 @@ module bitcoin_move::genesis{
     use bitcoin_move::ord;
     use bitcoin_move::utxo;
     use bitcoin_move::network;
+    use bitcoin_move::pending_block;
 
     const ErrorGenesisInit: u64 = 1;
 
     /// BitcoinGenesisContext is a genesis init config in the TxContext.
     struct BitcoinGenesisContext has copy,store,drop{
         network: u8,
-        genesis_block_height: u64, 
+        genesis_block_height: u64,
+        genesis_block_hash: address,
+        reorg_block_count: u64, 
     }
 
     fun init(){
@@ -26,14 +29,23 @@ module bitcoin_move::genesis{
         network::genesis_init(genesis_context.network);
         utxo::genesis_init();
         ord::genesis_init(&genesis_account);
-        bitcoin::genesis_init(&genesis_account, genesis_context.genesis_block_height);
+        bitcoin::genesis_init(&genesis_account, genesis_context.genesis_block_height, genesis_context.genesis_block_hash);
+        pending_block::genesis_init(genesis_context.reorg_block_count);
     }
 
     #[test_only]
     /// init the genesis context for test
     public fun init_for_test(){
         let genesis_account = moveos_std::signer::module_signer<BitcoinGenesisContext>();
-        tx_context::add_attribute_via_system(&genesis_account, BitcoinGenesisContext{network: network::network_signet(), genesis_block_height: 0});
+        tx_context::add_attribute_via_system(&genesis_account, 
+            BitcoinGenesisContext{
+                network: network::network_signet(), 
+                genesis_block_height: 0,
+                //the regtest genesis block hash
+                genesis_block_hash: bitcoin_move::bitcoin_hash::from_ascii_bytes(&b"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"),
+                reorg_block_count: 0,
+            }
+        );
         init();
     }
 

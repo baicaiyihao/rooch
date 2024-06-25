@@ -12,7 +12,7 @@
       "name": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/rooch-network/rooch/main/LICENSE"
     },
-    "version": "0.5.0"
+    "version": "0.5.6"
   },
   "methods": [
     {
@@ -1237,6 +1237,12 @@
           "owner": {
             "$ref": "#/components/schemas/rooch_types::address::RoochAddress"
           },
+          "owner_bitcoin_address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "size": {
             "type": "integer",
             "format": "uint64",
@@ -1418,8 +1424,12 @@
           "bitcoin_txid",
           "body",
           "index",
+          "inscription_number",
+          "is_curse",
           "metadata",
           "offset",
+          "parents",
+          "sequence_number",
           "txid"
         ],
         "properties": {
@@ -1454,6 +1464,14 @@
             "format": "uint32",
             "minimum": 0.0
           },
+          "inscription_number": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "is_curse": {
+            "type": "boolean"
+          },
           "metadata": {
             "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
           },
@@ -1472,15 +1490,8 @@
             "format": "uint64",
             "minimum": 0.0
           },
-          "parent": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ObjectID"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "parents": {
+            "$ref": "#/components/schemas/alloc::vec::Vec<moveos_types::moveos_std::object::ObjectID>"
           },
           "pointer": {
             "type": [
@@ -1488,6 +1499,11 @@
               "null"
             ],
             "format": "uint64",
+            "minimum": 0.0
+          },
+          "sequence_number": {
+            "type": "integer",
+            "format": "uint32",
             "minimum": 0.0
           },
           "txid": {
@@ -1646,6 +1662,34 @@
           {
             "type": "object",
             "required": [
+              "block_hash",
+              "chain_id",
+              "txid",
+              "type"
+            ],
+            "properties": {
+              "block_hash": {
+                "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
+              },
+              "chain_id": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0.0
+              },
+              "txid": {
+                "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "l1_tx"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "action",
               "action_type",
               "raw",
@@ -1665,6 +1709,12 @@
               },
               "sender": {
                 "type": "string"
+              },
+              "sender_bitcoin_address": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "sequence_number": {
                 "type": "integer",
@@ -1903,6 +1953,12 @@
           },
           "owner": {
             "$ref": "#/components/schemas/rooch_types::address::RoochAddress"
+          },
+          "owner_bitcoin_address": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "size": {
             "type": "integer",

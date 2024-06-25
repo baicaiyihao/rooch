@@ -32,7 +32,6 @@ module 0x11.TestModule1 {
         label b0:
             s0 = Self.new();
             s1 = option.some<u32>(123u32);
-            // error code 10009: INVALID_DATA_STRUCT_TYPE
             Self.f1<Self.S0, option.Option<u32>>(move(s0), move(s1));
             return;
     }

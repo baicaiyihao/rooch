@@ -1,8 +1,8 @@
 [package]
 name = "rooch-sequencer"
-version = "0.5.0"
 
 # Workspace inherited keys
+version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
@@ -41,6 +41,7 @@ move-resource-viewer = { workspace = true }
 moveos = { workspace = true }
 moveos-store = { workspace = true }
 moveos-types = { workspace = true }
+accumulator = { workspace = true }
 
 rooch-types = { workspace = true }
 rooch-store = { workspace = true }

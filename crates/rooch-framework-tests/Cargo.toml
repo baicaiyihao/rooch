@@ -1,8 +1,8 @@
 [package]
 name = "rooch-framework-tests"
-version = "0.5.0"
 
 # Workspace inherited keys
+version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
@@ -34,6 +34,7 @@ lazy_static = { workspace = true }
 tempfile = { workspace = true }
 coerce = { workspace = true }
 tokio = { features = ["full"], workspace = true }
+include_dir = { workspace = true }
 
 move-binary-format = { workspace = true }
 move-bytecode-utils = { workspace = true }

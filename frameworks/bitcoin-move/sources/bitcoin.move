@@ -22,15 +22,18 @@ module bitcoin_move::bitcoin{
     use rooch_framework::bitcoin_address::BitcoinAddress;
     
     use bitcoin_move::network;
-    use bitcoin_move::types::{Self, Block, Header, Transaction};
+    use bitcoin_move::types::{Self, Block, Header, Transaction, BlockHeightHash};
     use bitcoin_move::ord::{Self, Inscription,Flotsam, SatPoint};
     use bitcoin_move::utxo::{Self, UTXOSeal};
+    use bitcoin_move::pending_block;
 
     friend bitcoin_move::genesis;
 
     /// If the process block failed, we need to stop the system and fix the issue
     const ErrorBlockProcessError:u64 = 1;
     const ErrorBlockAlreadyProcessed:u64 = 2;
+    /// The reorg is too deep, we need to stop the system and fix the issue
+    const ErrorReorgTooDeep:u64 = 3;
 
     const ORDINAL_GENESIS_HEIGHT:u64 = 767430;
 
@@ -40,9 +43,9 @@ module bitcoin_move::bitcoin{
     }
 
     struct BitcoinBlockStore has key{
-        /// The genesis start block height
-        genesis_block_height: u64,
-        latest_block_height: Option<u64>,
+        /// The genesis start block
+        genesis_block: BlockHeightHash,
+        latest_block: Option<BlockHeightHash>,
         /// block hash -> block header
         blocks: Table<address, Header>,
         /// block height -> block hash
@@ -51,16 +54,16 @@ module bitcoin_move::bitcoin{
         hash_to_height: Table<address, u64>,
         /// tx id -> tx
         txs: Table<address, Transaction>,
-        /// tx id -> tx
+        /// tx id -> block height
         tx_to_height: Table<address, u64>,
         /// tx id list, we can use this to scan txs
         tx_ids: TableVec<address>,
     }
 
-    public(friend) fun genesis_init(_genesis_account: &signer, genesis_block_height: u64){
+    public(friend) fun genesis_init(_genesis_account: &signer, genesis_block_height: u64, genesis_block_hash: address){
         let btc_block_store = BitcoinBlockStore{
-            genesis_block_height,
-            latest_block_height: option::none(),
+            genesis_block: types::new_block_height_hash(genesis_block_height, genesis_block_hash),
+            latest_block: option::none(),
             blocks: table::new(),
             height_to_hash: table::new(),
             hash_to_height: table::new(),
@@ -82,61 +85,18 @@ module bitcoin_move::bitcoin{
         object::borrow_mut_object_shared(object_id)
     }
 
-    fun process_block(btc_block_store_obj: &mut Object<BitcoinBlockStore>, block_height: u64, block_hash: address, block_bytes: vector<u8>):u32{
-        let btc_block_store = object::borrow_mut(btc_block_store_obj);
+    fun process_block_header(btc_block_store: &mut BitcoinBlockStore, block_height: u64, block_hash: address, block_header: Header){
         //already processed
         assert!(!table::contains(&btc_block_store.hash_to_height, block_hash), ErrorBlockAlreadyProcessed);
 
-        let block = bcs::from_bytes<Block>(block_bytes);
-        process_txs(btc_block_store, &block, block_height);
-        let block_header = types::header(&block);
+        //We have pending block to handle the reorg, this should not happen. 
+        //But if it happens, we need to stop the system and fix the issue
+        assert!(!table::contains(&btc_block_store.height_to_hash, block_height), ErrorReorgTooDeep);
 
-        if(table::contains(&btc_block_store.height_to_hash, block_height)){
-            //https://github.com/rooch-network/rooch/issues/1685
-            //TODO handle reorg
-        };
-        let time = types::time(block_header);
         table::add(&mut btc_block_store.height_to_hash, block_height, block_hash);
         table::add(&mut btc_block_store.hash_to_height, block_hash, block_height);
-        table::add(&mut btc_block_store.blocks, block_hash, *block_header);
-        btc_block_store.latest_block_height = option::some(block_height);
-        time 
-    }
- 
-    fun process_txs(btc_block_store: &mut BitcoinBlockStore, block:&Block, block_height: u64){
-        let txdata = types::txdata(block);
-        let idx = 0;
-        let coinbase_tx_idx = 0;
-        let flotsams = vector::empty();
-        let tx_len = vector::length(txdata);
-        while(idx < tx_len){
-            let tx = vector::borrow(txdata, idx);
-
-            let is_coinbase = is_coinbase_tx(tx);
-            if(is_coinbase) {
-                coinbase_tx_idx = idx;
-            } else {
-                let tx_flotsams = process_tx(btc_block_store, tx, block_height);
-                vector::append(&mut flotsams, tx_flotsams);
-            };
-            idx = idx + 1;
-        };
-
-        // handle coinbase tx
-        let coinbase_tx = vector::borrow(txdata, coinbase_tx_idx);
-        process_coinbase_tx(btc_block_store, coinbase_tx, flotsams, block_height)
-    }
-
-    fun is_coinbase_tx(tx: &Transaction): bool {
-        let txinput = types::tx_input(tx);
-        let is_coinbase = if(vector::length(txinput) > 0) {
-            let first_input = vector::borrow(txinput, 0);
-            let previous_output = types::txin_previous_output(first_input);
-            types::is_null_outpoint(previous_output)
-        } else {
-            false
-        };
-        is_coinbase
+        table::add(&mut btc_block_store.blocks, block_hash, block_header);
+        btc_block_store.latest_block = option::some(types::new_block_height_hash(block_height, block_hash)); 
     }
 
     fun process_tx(btc_block_store: &mut BitcoinBlockStore, tx: &Transaction, block_height: u64): vector<Flotsam>{
@@ -152,6 +112,7 @@ module bitcoin_move::bitcoin{
         process_coinbase_utxo(tx, flotsams, block_height);
         let txid = types::tx_id(tx);
         table::add(&mut btc_block_store.txs, txid, *tx);
+        table::add(&mut btc_block_store.tx_to_height, txid, block_height);
         table_vec::push_back(&mut btc_block_store.tx_ids, txid);
     }
 
@@ -292,14 +253,38 @@ module bitcoin_move::bitcoin{
     }
 
 
-    /// The relay server submit a new Bitcoin block to the light client.
-    fun submit_new_block(block_height: u64, block_hash: address, block_bytes: vector<u8>){
-        let btc_block_store_obj = borrow_block_store_mut();
-        let time = process_block(btc_block_store_obj, block_height, block_hash, block_bytes);
-
+    /// The the sequencer submit a new Bitcoin block to execute
+    /// This function is a system function, is the execute_l1_block entry point
+    fun execute_l1_block(block_height: u64, block_hash: address, block_bytes: vector<u8>){
+        let block = bcs::from_bytes<Block>(block_bytes);
+        let block_header = types::header(&block);
+        let time = types::time(block_header);
+        pending_block::add_pending_block(block_height, block_hash, block);    
+        //We directly update the global time do not wait the pending block to be confirmed
+        //The reorg do not affect the global time
         let timestamp_seconds = (time as u64);
         let module_signer = signer::module_signer<BitcoinBlockStore>();
         timestamp::try_update_global_time(&module_signer, timestamp::seconds_to_milliseconds(timestamp_seconds));      
+    }
+
+    /// This is the execute_l1_tx entry point
+    fun execute_l1_tx(block_hash: address, txid: address){
+        let btc_block_store_obj = borrow_block_store_mut();
+        let btc_block_store = object::borrow_mut(btc_block_store_obj);
+        let inprocess_block = pending_block::process_pending_tx(block_hash, txid);
+        let block_height = pending_block::inprocess_block_height(&inprocess_block);
+        let tx = pending_block::inprocess_block_tx(&inprocess_block);
+        if(types::is_coinbase_tx(tx)){
+            let flotsams = pending_block::inprocess_block_flotsams(&inprocess_block);
+            process_coinbase_tx(btc_block_store, tx, flotsams, block_height);
+            let header = pending_block::finish_pending_block(inprocess_block);
+            process_block_header(btc_block_store, block_height, block_hash, header);
+        }else{
+            let tx_flotsams = process_tx(btc_block_store, tx, block_height);
+            let flotsams = pending_block::inprocess_block_flotsams_mut(&mut inprocess_block);
+            vector::append(flotsams, tx_flotsams);
+            pending_block::finish_pending_tx(inprocess_block);
+        };
     } 
 
     public fun get_tx(txid: address): Option<Transaction>{
@@ -315,7 +300,7 @@ module bitcoin_move::bitcoin{
     public fun get_tx_height(txid: address): Option<u64>{
         let btc_block_store_obj = borrow_block_store();
         let btc_block_store = object::borrow(btc_block_store_obj);
-        if(table::contains(&btc_block_store.txs, txid)){
+        if(table::contains(&btc_block_store.tx_to_height, txid)){
             option::some(*table::borrow(&btc_block_store.tx_to_height, txid))
         }else{
             option::none()
@@ -343,6 +328,18 @@ module bitcoin_move::bitcoin{
         }
     }
 
+    /// Get block hash via block_height
+    public fun get_block_hash_by_height(block_height: u64): Option<address>{
+        let btc_block_store_obj = borrow_block_store();
+        let btc_block_store = object::borrow(btc_block_store_obj);
+        if(table::contains(&btc_block_store.height_to_hash, block_height)){
+            let block_hash = *table::borrow(&btc_block_store.height_to_hash, block_height);
+            option::some(block_hash)
+        }else{
+            option::none()
+        }
+    }
+
     /// Get block via block_height
     public fun get_block_by_height(block_height: u64): Option<Header>{
         let btc_block_store_obj = borrow_block_store();
@@ -355,31 +352,32 @@ module bitcoin_move::bitcoin{
         }
     }
 
-    public fun get_genesis_block_height(): u64 {
+    public fun get_genesis_block(): BlockHeightHash {
         let btc_block_store_obj = borrow_block_store();
         let btc_block_store = object::borrow(btc_block_store_obj);
-        btc_block_store.genesis_block_height
+        btc_block_store.genesis_block
     }
 
     /// Get latest block height
-    public fun get_latest_block_height(): Option<u64> {
+    public fun get_latest_block(): Option<BlockHeightHash> {
         let btc_block_store_obj = borrow_block_store();
         let btc_block_store = object::borrow(btc_block_store_obj);
-        btc_block_store.latest_block_height
+        btc_block_store.latest_block
     }
 
-    /// Get the bitcoin time, if the latest block is not exist, return 0 
+    /// Get the bitcoin time in seconds
     public fun get_bitcoin_time(): u32 {
         let btc_block_store_obj = borrow_block_store();
         let btc_block_store = object::borrow(btc_block_store_obj);
-        let latest_block_height = btc_block_store.latest_block_height;
-        if(option::is_some(&latest_block_height)){
-            let latest_block_height = option::destroy_some(latest_block_height);
-            let block_hash = *table::borrow(&btc_block_store.height_to_hash, latest_block_height);
+        let latest_block = *&btc_block_store.latest_block;
+        if(option::is_some(&latest_block)){
+            let latest_block = option::destroy_some(latest_block);
+            let (_block_height, block_hash) = types::unpack_block_height_hash(latest_block);
             let header = table::borrow(&btc_block_store.blocks, block_hash);
             types::time(header)
         }else{
-            0u32
+            // Get the genesis block time
+            (timestamp::now_seconds() as u32)
         }
     }
 
@@ -400,57 +398,26 @@ module bitcoin_move::bitcoin{
         };
     }
 
-    public fun verify_header(block_header : Header) : bool {
+    public fun contains_header(block_header : &Header) : bool {
         let block_hash = types::header_to_hash(block_header);
-        let btc_block_store_obj = borrow_block_store();
-        let btc_block_store = object::borrow(btc_block_store_obj);
-        if(table::contains(&btc_block_store.blocks, block_hash)){
-            true
-        }else{
-            false
-        }
+        let block = get_block(block_hash);
+        option::is_some(&block)
     }
 
     #[test_only]
-    public fun submit_block_for_test(block_height: u64, block_hash: address, block_header: &Header){
-        let btc_block_store_obj = borrow_block_store_mut();
-        let btc_block_store = object::borrow_mut(btc_block_store_obj);
-        let time = types::time(block_header);
-        table::add(&mut btc_block_store.height_to_hash, block_height, block_hash);
-        table::add(&mut btc_block_store.hash_to_height, block_hash, block_height);
-        table::add(&mut btc_block_store.blocks, block_hash, *block_header);
-
-        let curr_latest_height = option::get_with_default(&btc_block_store.latest_block_height, 0);
-        if (block_height > curr_latest_height) {
-            btc_block_store.latest_block_height = option::some(block_height);
-        };
-
-        let timestamp_seconds = (time as u64);
-        let module_signer = signer::module_signer<BitcoinBlockStore>();
-        timestamp::try_update_global_time(&module_signer, timestamp::seconds_to_milliseconds(timestamp_seconds));    
+    public fun execute_l1_block_for_test(block_height: u64, block: Block){
+        let block_hash = types::header_to_hash(types::header(&block));
+        let block_bytes = bcs::to_bytes(&block);
+        execute_l1_block(block_height, block_hash, block_bytes);
+        // We directly conform the txs for convenience test
+        let (_, txs) = types::unpack_block(block);
+        let coinbase_tx = vector::remove(&mut txs, 0);
+        vector::for_each(txs, |tx| {
+            let txid = types::tx_id(&tx);
+            execute_l1_tx(block_hash, txid);
+        });
+        //process coinbase tx last
+        execute_l1_tx(block_hash, types::tx_id(&coinbase_tx));
     }
 
-    #[test_only]
-    use moveos_std::address;
-    #[test_only]
-    use std::ascii;
-
-    #[test]
-    fun verify_header_test() {
-        let version = 536879108;
-        let prev_blockhash =  option::destroy_some(address::from_ascii_string(ascii::string(b"00000000000000000009d54a110cc122960d31567d3ee84a1f18a98f50591046")));
-        let merkle_root = option::destroy_some(address::from_ascii_string(ascii::string(b"e1e0573e6098d8128ee859e7540f56b01fe0a33e56694df6d2fab0f96c4954b3")));
-        let time = 1644403033;
-        let bits = 0x170a8bb4;
-        let nonce =  1693537958;
-
-        let block_header = types::new_header_for_test(version, prev_blockhash, merkle_root, time, bits, nonce);
-        let block_hash = types::header_to_hash(block_header);
-        assert!(block_hash == address::from_bytes(x"00000000000000000002b73f69e81b8b5e98dff0f2b7632fcb83c050c3b099a1"), 1);
-
-        let module_signer = signer::module_signer<BitcoinBlockStore>();
-        genesis_init(&module_signer, 0);
-        submit_block_for_test(1, block_hash, &block_header);
-        assert!(verify_header(block_header), 2);
-    }
 }

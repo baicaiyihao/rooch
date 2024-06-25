@@ -160,8 +160,12 @@ impl ExportCommand {
         println!("Start statedb export task, batch_size: {:?}", BATCH_SIZE);
         let opt = RoochOpt::new_with_default(self.base_data_dir, self.chain_id, None)?;
         let rooch_db = RoochDB::init(opt.store_config())?;
-
-        println!("root object: {:?}", rooch_db.root);
+        let root = rooch_db.latest_root()?.ok_or_else(|| {
+            RoochError::from(anyhow::Error::msg(
+                "The statedb is empty, please init genesis first.",
+            ))
+        })?;
+        println!("root object: {:?}", root);
 
         let mut _start_time = SystemTime::now();
         let file_name = self.output.display().to_string();
@@ -172,7 +176,7 @@ impl ExportCommand {
         })?;
         let root_state_root = self
             .state_root
-            .unwrap_or(H256::from(rooch_db.root.state_root.into_bytes()));
+            .unwrap_or(H256::from(root.state_root.into_bytes()));
 
         let mode = ExportMode::try_from(self.mode.unwrap_or(ExportMode::Genesis.to_num()))?;
         match mode {
@@ -244,6 +248,7 @@ impl ExportCommand {
                 root_state_root,
                 obj.id,
                 false,
+                true,
                 writer,
             )?;
         }
@@ -291,6 +296,7 @@ impl ExportCommand {
             root_state_root,
             object_id.clone(),
             false,
+            true,
             writer,
         )?;
 
@@ -318,8 +324,9 @@ impl ExportCommand {
         state_root: H256,
         parent_state_root: H256,
         object_id: ObjectID,
-        // export child object as object state under indexer mode
-        is_child_object_as_object_state: bool,
+        // export child field as object state under indexer mode
+        is_child_field_as_object_state: bool,
+        is_recursive_export_child_field: bool,
         writer: &mut Writer<W>,
     ) -> Result<()> {
         let starting_key = None;
@@ -329,7 +336,7 @@ impl ExportCommand {
             .get_state_store()
             .iter(state_root, starting_key.clone())?;
 
-        if object_id.has_child() {
+        if is_recursive_export_child_field && object_id.has_child() {
             for item in iter {
                 let (_k, v) = item?;
                 if v.is_object() {
@@ -340,6 +347,7 @@ impl ExportCommand {
                             H256::from(object.state_root.into_bytes()),
                             state_root,
                             object.id,
+                            false,
                             false,
                             writer,
                         )?;
@@ -355,7 +363,7 @@ impl ExportCommand {
 
         // write csv header.
         {
-            let state_type = if is_child_object_as_object_state {
+            let state_type = if is_child_field_as_object_state {
                 GLOBAL_STATE_TYPE_OBJECT
             } else {
                 GLOBAL_STATE_TYPE_FIELD
@@ -416,6 +424,7 @@ impl ExportCommand {
                 root_state_root,
                 obj.id,
                 true,
+                false,
                 writer,
             )?;
         }

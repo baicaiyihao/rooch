@@ -30,7 +30,6 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 
-pub mod accumulator_store;
 pub mod config_store;
 pub mod event_store;
 pub mod state_store;
@@ -40,18 +39,18 @@ pub mod transaction_store;
 
 // pub const DEFAULT_PREFIX_NAME: ColumnFamilyName = "default";
 pub const STATE_NODE_PREFIX_NAME: ColumnFamilyName = "state_node";
-pub const TRANSACTION_PREFIX_NAME: ColumnFamilyName = "transaction";
+pub const TRANSACTION_EXECUTION_INFO_PREFIX_NAME: ColumnFamilyName = "transaction_execution_info";
 pub const EVENT_PREFIX_NAME: ColumnFamilyName = "event";
 pub const EVENT_HANDLE_PREFIX_NAME: ColumnFamilyName = "event_handle";
 pub const CONFIG_STARTUP_INFO_PREFIX_NAME: ColumnFamilyName = "config_startup_info";
 pub const CONFIG_GENESIS_PREFIX_NAME: ColumnFamilyName = "config_genesis";
 
-///db store use prefix_name vec to init
+/// db store use prefix_name vec to init
 /// Please note that adding a prefix needs to be added in vec simultaneously, remember！！
 static VEC_PREFIX_NAME: Lazy<Vec<ColumnFamilyName>> = Lazy::new(|| {
     vec![
         STATE_NODE_PREFIX_NAME,
-        TRANSACTION_PREFIX_NAME,
+        TRANSACTION_EXECUTION_INFO_PREFIX_NAME,
         EVENT_PREFIX_NAME,
         EVENT_HANDLE_PREFIX_NAME,
         CONFIG_STARTUP_INFO_PREFIX_NAME,

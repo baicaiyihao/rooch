@@ -36,7 +36,7 @@ jobs:
           && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
           && sudo apt update \
           && sudo apt install gh -y
-      - uses: rooch-network/rooch/.github/actions/rust-setup@main
+      - uses: ./.github/actions/rust-setup # Using relative path to reference the action in the current branch
       # Todo self-hosted install docker fail
       #- name: Set up Docker
       #  uses: docker-practice/actions-setup-docker@master
@@ -51,7 +51,7 @@ jobs:
           docker --version
           sleep 6
           docker images
-          docker pull bitseed/bitseed:0.1.4
+          docker pull bitseed/bitseed:0.1.6
 
       - name: Check code format
         run: cargo fmt -- --check
@@ -92,14 +92,14 @@ jobs:
         run: pnpm lint
         continue-on-error: true
         timeout-minutes: 15
-      - name: Build SDK
-        run: pnpm rooch-sdk build
+      # - name: Build SDK
+      #   run: pnpm rooch-sdk build
 #      - name: Test SDK
 #        run: pnpm rooch-sdk test
-      - name: Build SDK KIT
-        run: pnpm rooch-sdk-kit build
-      - name: Build Dashboard
-        run: pnpm dashboard build
+      # - name: Build SDK KIT
+      #   run: pnpm rooch-sdk-kit build
+      # - name: Build Dashboard
+      #   run: pnpm dashboard build
 
       - uses: CatChen/check-git-status-action@v1
         with:
