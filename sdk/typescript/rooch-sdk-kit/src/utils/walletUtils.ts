@@ -1,33 +1,22 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
-import { SupportChain, SupportChains } from '../feature'
-import { BaseWallet, Metamask, UniSatWallet } from '../types'
-import { RoochClient } from '@roochnetwork/rooch-sdk'
+import { SupportChain } from '../feature/index.js'
+import {
+  Wallet,
+  UniSatWallet,
+  // OkxWallet,
+  // OnekeyWallet,
+  // OnekeyHardwareWallet,
+} from '../wellet/index.js'
 
-export async function checkWallets(client: RoochClient, filter?: SupportChain) {
-  const wallets: BaseWallet[] = []
-  SupportChains.filter((v) => !filter || filter === v).forEach((w) => {
-    switch (w) {
-      case SupportChain.ETH:
-        wallets.push(new Metamask(client))
-        break
-      case SupportChain.BITCOIN:
-        wallets.push(new UniSatWallet(client))
-        break
-      case SupportChain.Rooch:
-        wallets.push(new Metamask(client), new UniSatWallet(client))
-        break
-    }
-  })
+export async function checkWallets(filter?: SupportChain) {
+  const wallets: Wallet[] = [
+    new UniSatWallet(),
+    // new OkxWallet(),
+    // new OnekeyWallet(),
+    // new OnekeyHardwareWallet(),
+  ].filter((wallet) => wallet.getChain() === filter || !filter)
 
-  return await Promise.all(
-    wallets.map(async (w) => {
-      if (await w.checkInstalled()) {
-        w.installed = true
-        return w
-      }
-      return w
-    }),
-  )
+  return await Promise.all(wallets.filter(async (w) => await w.checkInstalled()))
 }

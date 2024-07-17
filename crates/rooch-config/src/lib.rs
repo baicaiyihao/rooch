@@ -315,12 +315,11 @@ impl BaseConfig {
     pub fn data_dir(&self) -> &Path {
         self.data_dir.as_path()
     }
-    pub fn base_data_dir(&self) -> DataDirPath {
-        self.base_data_dir.clone()
+    pub fn base_data_dir(&self) -> &Path {
+        self.base_data_dir.path()
     }
 }
 
-// #[derive(Debug, Parser, Default, Serialize, Deserialize)]
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ServerOpt {
     /// Sequencer, proposer and relayer keypair

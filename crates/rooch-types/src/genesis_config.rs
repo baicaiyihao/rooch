@@ -2,24 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::address::BitcoinAddress;
-use bitcoin::BlockHash;
-use ethers::types::H256;
+use bitcoin::{block::Header, BlockHash};
 use framework_builder::stdlib_version::StdlibVersion;
-use move_core_types::language_storage::StructTag;
-use moveos_types::moveos_std::object::ObjectID;
+use move_core_types::value::MoveTypeLayout;
+use moveos_types::{
+    moveos_std::{module_store::ModuleStore, timestamp::Timestamp},
+    state::{MoveState, ObjectState},
+};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub struct GenesisObject {
-    pub id: ObjectID,
-    pub object_type: StructTag,
-    pub state_root: H256,
-    pub size: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GenesisConfig {
     /// The Bitcoin network that the genesis block is based on
     pub bitcoin_network: u8,
@@ -32,7 +26,7 @@ pub struct GenesisConfig {
     /// The timestamp of the Bitcoin block that the genesis block is based on
     pub timestamp: u64,
     pub sequencer_account: BitcoinAddress,
-    pub genesis_objects: Vec<GenesisObject>,
+    pub genesis_objects: Vec<(ObjectState, MoveTypeLayout)>,
     pub stdlib_version: StdlibVersion,
 }
 
@@ -44,7 +38,7 @@ impl GenesisConfig {
         bitcoin_reorg_block_count: u64,
         timestamp: u64,
         sequencer_account: BitcoinAddress,
-        genesis_objects: Vec<GenesisObject>,
+        genesis_objects: Vec<(ObjectState, MoveTypeLayout)>,
         stdlib_version: StdlibVersion,
     ) -> Self {
         Self {
@@ -89,7 +83,13 @@ pub static G_LOCAL_CONFIG: Lazy<GenesisConfig> = Lazy::new(|| GenesisConfig {
     bitcoin_reorg_block_count: 0,
     timestamp: 0,
     sequencer_account: BitcoinAddress::default(),
-    genesis_objects: vec![],
+    genesis_objects: vec![
+        (
+            ObjectState::new_timestamp(Timestamp { milliseconds: 0 }),
+            Timestamp::type_layout(),
+        ),
+        (ObjectState::new_module_store(), ModuleStore::type_layout()),
+    ],
     stdlib_version: StdlibVersion::Latest,
 });
 
@@ -107,26 +107,45 @@ pub static G_DEV_CONFIG: Lazy<GenesisConfig> = Lazy::new(|| GenesisConfig {
         "bcrt1p56tdhxkcpc5xvdurfnufn9lkkywsh0gxttv5ktkvlezj0t23nasqawwrla",
     )
     .expect("Should be valid"),
-    genesis_objects: vec![],
+    genesis_objects: vec![
+        (
+            ObjectState::new_timestamp(Timestamp { milliseconds: 0 }),
+            Timestamp::type_layout(),
+        ),
+        (ObjectState::new_module_store(), ModuleStore::type_layout()),
+    ],
     stdlib_version: StdlibVersion::Latest,
 });
 
+//curl -sSL https://mempool.space/testnet/api/block/$(curl -sSL https://mempool.space/testnet/api/block-height/2867700)
+static TESTNET_GENESIS_HEIGHT_HEADER: Lazy<(u64, Header)> = Lazy::new(|| {
+    (2867900, bitcoin::consensus::deserialize(
+        &hex::decode("00e0962bd97a2b80ffb30abf34c2dc211c167a3e35dc6e5bdba5ac1d23208d6f0000000011059bafb1e9ceb8f2e494671c078863589574f5964548f4c0aa3ba0da733ebfa47f9266129422199e86b520")
+            .expect("Should be valid"),
+    ).expect("Should be valid"))
+});
+
 pub static G_TEST_CONFIG: Lazy<GenesisConfig> = Lazy::new(|| {
-    //curl -sSL https://mempool.space/testnet/api/block/$(curl -sSL https://mempool.space/testnet/api/blocks/tip/hash)
     GenesisConfig {
         bitcoin_network: crate::bitcoin::network::Network::Testnet.to_num(),
-        bitcoin_block_height: 2821523,
-        bitcoin_block_hash: BlockHash::from_str(
-            "000000003f2649e6d87c6037d26af712785d5fe59c576469e486991213eda3c6",
-        )
-        .expect("Should be valid"),
+        bitcoin_block_height: TESTNET_GENESIS_HEIGHT_HEADER.0,
+        bitcoin_block_hash: TESTNET_GENESIS_HEIGHT_HEADER.1.block_hash(),
         bitcoin_reorg_block_count: 3,
-        timestamp: 1718592994000,
+        //Make sure this timestamp is the same as Genesis Object Timestamp
+        timestamp: TESTNET_GENESIS_HEIGHT_HEADER.1.time as u64 * 1000,
         sequencer_account: BitcoinAddress::from_str(
             "bcrt1p56tdhxkcpc5xvdurfnufn9lkkywsh0gxttv5ktkvlezj0t23nasqawwrla",
         )
         .expect("Should be valid"),
-        genesis_objects: vec![],
+        genesis_objects: vec![
+            (
+                ObjectState::new_timestamp(Timestamp {
+                    milliseconds: TESTNET_GENESIS_HEIGHT_HEADER.1.time as u64 * 1000,
+                }),
+                Timestamp::type_layout(),
+            ),
+            (ObjectState::new_module_store(), ModuleStore::type_layout()),
+        ],
         stdlib_version: StdlibVersion::Version(1),
     }
 });
@@ -146,7 +165,13 @@ pub static G_MAIN_CONFIG: Lazy<GenesisConfig> = Lazy::new(|| {
             "bcrt1p56tdhxkcpc5xvdurfnufn9lkkywsh0gxttv5ktkvlezj0t23nasqawwrla",
         )
         .expect("Should be valid"),
-        genesis_objects: vec![],
-        stdlib_version: StdlibVersion::Version(1),
+        genesis_objects: vec![
+            (
+                ObjectState::new_timestamp(Timestamp { milliseconds: 0 }),
+                Timestamp::type_layout(),
+            ),
+            (ObjectState::new_module_store(), ModuleStore::type_layout()),
+        ],
+        stdlib_version: StdlibVersion::Version(2),
     }
 });

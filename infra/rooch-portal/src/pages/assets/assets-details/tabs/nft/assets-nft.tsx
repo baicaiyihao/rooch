@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  useCurrentAccount,
   useCurrentSession,
   useRoochClient,
   useRoochClientQuery,
   useTransferObject,
 } from '@roochnetwork/rooch-sdk-kit'
 
-import { AlertCircle, ArrowLeft, Copy, Wallet } from 'lucide-react'
+import { AlertCircle, ArrowLeft, Copy } from 'lucide-react'
 
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -20,11 +19,10 @@ import CustomPagination from '@/components/custom-pagination.tsx'
 import { LoadingSpinner } from '@/components/loading-spinner.tsx'
 
 import { formatAddress } from '@/utils/format'
-import { ROOCH_OPERATING_ADDRESS } from '@/common/constant.ts'
+import { ROOCH_NFT_OPERATING_ADDRESS } from '@/common/constant.ts'
 
 export const AssetsNft = () => {
   const sessionKey = useCurrentSession()
-  const account = useCurrentAccount()
   const [modalOpen, setModalOpen] = useState(false)
   const [selectedNFTId, setSelectedNFTId] = useState('')
   // const [curNFT, setCurNFT] = useState<ObjectStateView>()
@@ -51,7 +49,7 @@ export const AssetsNft = () => {
   const queryOptions = useMemo(
     () => ({
       cursor: mapPageToNextCursor.current[paginationModel.page - 1],
-      pageSize: paginationModel.pageSize,
+      pageSize: paginationModel.pageSize.toString(),
     }),
     [paginationModel],
   )
@@ -63,8 +61,8 @@ export const AssetsNft = () => {
   } = useRoochClientQuery('queryObjectStates', {
     filter: {
       object_type_with_owner: {
-        owner: sessionKey?.getAddress() || '',
-        object_type: `${ROOCH_OPERATING_ADDRESS}::nft::NFT`,
+        owner: sessionKey?.getRoochAddress().toHexAddress() || '',
+        object_type: `${ROOCH_NFT_OPERATING_ADDRESS}::nft::NFT`,
       },
     },
     // @ts-ignore
@@ -84,7 +82,7 @@ export const AssetsNft = () => {
       const collectionInfo = await Promise.all(
         nfts.data
           .map((item) => ({
-            key: item.object_id,
+            key: item.id,
             collection: (item.value as any).value.value.value.collection,
           }))
           .map(async (obj) => {
@@ -153,7 +151,7 @@ export const AssetsNft = () => {
   }
 
   const handleTransferObject = async () => {
-    const nft = nfts?.data.find((item) => item.object_id === selectedNFTId)
+    const nft = nfts?.data.find((item) => item.id === selectedNFTId)
 
     if (!nft || toAddress === '') {
       return
@@ -162,27 +160,17 @@ export const AssetsNft = () => {
     setTransferLoading(true)
 
     await transferObject({
-      account: sessionKey!,
-      toAddress: toAddress,
-      objId: nft.object_id,
-      objType: nft.object_type,
+      signer: sessionKey!,
+      recipient: toAddress,
+      objectId: nft.id,
+      objectType: {
+        target: nft.object_type
+      },
     })
 
     handleClose()
     setTransferLoading(false)
     reFetchNFTS()
-  }
-
-  if (!account) {
-    return (
-      <div className="flex flex-col items-center justify-center text-center p-40">
-        <Wallet className="w-12 h-12 mb-4 text-zinc-500" />
-        <p className="text-xl text-zinc-500 font-semibold">Haven't connected to wallet</p>
-        <p className="text-sm text-muted-foreground mt-2">
-          Please connect your wallet to view your assets.
-        </p>
-      </div>
-    )
   }
 
   if (isLoading || isError) {
@@ -212,14 +200,14 @@ export const AssetsNft = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 w-full place-items-center">
         {nfts?.data.map((nft) => (
           <Card
-            key={nft.object_id}
+            key={nft.id}
             className="w-full transition-all border-border/40 dark:bg-zinc-800/90 dark:hover:border-primary/20 hover:shadow-md overflow-hidden"
-            onClick={() => handleImageClick(nft.object_id)}
+            onClick={() => handleImageClick(nft.id)}
           >
             <CardContent className="p-0">
               <AspectRatio ratio={1} className="flex items-center justify-center overflow-hidden">
                 <img
-                  src={images.get(nft.object_id)}
+                  src={images.get(nft.id)}
                   alt="NFT"
                   className="rounded-md object-cover hover:scale-110 transition-all ease-in-out duration-300"
                 />
@@ -272,7 +260,7 @@ export const AssetsNft = () => {
                     {/* From Address */}
                     <div className="cursor-pointer">
                       <span className="text-base font-normal text-gray-800 dark:text-gray-100 flex items-center justify-start gap-2 transition-all">
-                        <p>{formatAddress(sessionKey?.getAddress())}</p>
+                        <p>{formatAddress(sessionKey?.getRoochAddress().toBech32Address())}</p>
                         <Copy className="w-4 h-4 text-muted-foreground" />
                       </span>
                     </div>

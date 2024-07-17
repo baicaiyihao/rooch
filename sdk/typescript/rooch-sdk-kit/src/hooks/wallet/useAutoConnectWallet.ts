@@ -4,22 +4,23 @@
 import { useQuery } from '@tanstack/react-query'
 import { useLayoutEffect, useState } from 'react'
 
-import { useWalletStore } from './useWalletStore'
-import { useConnectWallet } from './useConnectWallet'
-import { useWallets } from '../../hooks/wallet/useWallets'
-import { useCurrentWallet } from '../../hooks/wallet/useCurrentWallet'
-import { useCurrentAccount } from '../../hooks/wallet/useCurrentAccount'
-import { SupportChain } from '../../feature'
+import {
+  useWalletStore,
+  useConnectWallet,
+  useWallets,
+  useCurrentWallet,
+  useCurrentAddress,
+} from './index.js'
 
 export function useAutoConnectWallet(): 'disabled' | 'idle' | 'attempted' {
   const { mutateAsync: connectWallet } = useConnectWallet()
   const autoConnectEnabled = useWalletStore((state) => state.autoConnectEnabled)
   const lastConnectedWalletName = useWalletStore((state) => state.lastConnectedWalletName)
-  const lastConnectedAccountAddress = useWalletStore((state) => state.lastConnectedAccountAddress)
+  const lastConnectedAddress = useWalletStore((state) => state.lastConnectedAddress)
   const { isConnected } = useCurrentWallet()
   const wallets = useWallets()
   const [clientOnly, setClientOnly] = useState(false)
-  const currentAccount = useCurrentAccount()
+  const currentAddress = useCurrentAddress()
 
   useLayoutEffect(() => {
     setClientOnly(true)
@@ -33,7 +34,7 @@ export function useAutoConnectWallet(): 'disabled' | 'idle' | 'attempted' {
         isConnected,
         autoConnectEnabled,
         lastConnectedWalletName,
-        lastConnectedAccountAddress,
+        lastConnectedAddress,
       },
     ],
     queryFn: async () => {
@@ -41,22 +42,17 @@ export function useAutoConnectWallet(): 'disabled' | 'idle' | 'attempted' {
         return 'disabled'
       }
 
-      if (!lastConnectedWalletName || !lastConnectedAccountAddress || isConnected) {
+      if (!lastConnectedWalletName || !lastConnectedAddress || isConnected) {
         return 'attempted'
       }
 
-      let wallet = wallets.find((wallet) => wallet.name === lastConnectedWalletName)
+      let wallet = wallets.find((wallet) => wallet.getName() === lastConnectedWalletName)
 
       if (wallet) {
         await connectWallet({ wallet })
-      }
-
-      // bitcoin wallet is not support switch account
-      if (
-        wallet!.getChain() !== SupportChain.BITCOIN &&
-        currentAccount?.address !== lastConnectedAccountAddress
-      ) {
-        wallet!.switchAccount(lastConnectedAccountAddress)
+        if (wallet.getChain() !== 'bitcoin' && currentAddress?.toStr() !== lastConnectedAddress) {
+          wallet.switchAccount(lastConnectedAddress)
+        }
       }
 
       return 'attempted'
@@ -66,9 +62,18 @@ export function useAutoConnectWallet(): 'disabled' | 'idle' | 'attempted' {
     gcTime: 0,
     staleTime: 0,
     networkMode: 'always',
-    retry: false,
+    retry: (failureCount) => {
+      // Retry only if there is a wallet to connect and we haven't exceeded 3 attempts
+      if (
+        wallets.find((wallet) => wallet.getName() === lastConnectedWalletName) &&
+        failureCount < 3
+      ) {
+        return true
+      }
+      return false
+    },
     retryOnMount: false,
-    refetchInterval: false,
+    refetchInterval: 1000,
     refetchIntervalInBackground: false,
     refetchOnMount: false,
     refetchOnReconnect: false,

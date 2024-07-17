@@ -8,6 +8,7 @@ use crate::{
 };
 use anyhow::{bail, Result};
 use bech32::{Bech32m, Hrp};
+use bitcoin::address::Payload;
 use bitcoin::bech32::segwit::encode_to_fmt_unchecked;
 use bitcoin::script::PushBytesBuf;
 use bitcoin::{
@@ -19,7 +20,6 @@ use fastcrypto::hash::Blake2b256;
 use fastcrypto::hash::HashFunction;
 use fastcrypto::secp256k1::Secp256k1PublicKey;
 use hex::FromHex;
-use move_core_types::language_storage::TypeTag;
 use move_core_types::{
     account_address::AccountAddress,
     ident_str,
@@ -28,7 +28,7 @@ use move_core_types::{
 };
 #[cfg(any(test, feature = "fuzzing"))]
 use moveos_types::h256;
-use moveos_types::state::{KeyState, MoveState};
+use moveos_types::state::MoveState;
 use moveos_types::{
     h256::H256,
     state::{MoveStructState, MoveStructType},
@@ -44,6 +44,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::serde_as;
 use sha3::{Digest, Sha3_256};
 use std::fmt;
+use std::ops::Deref;
 use std::str::FromStr;
 
 /// The address type that Rooch supports
@@ -125,11 +126,6 @@ impl MultiChainAddress {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         bcs::to_bytes(self).expect("bcs encode should success")
-    }
-
-    pub fn to_key(&self) -> KeyState {
-        let key_type = TypeTag::Struct(Box::new(Self::struct_tag()));
-        KeyState::new(self.to_bytes(), key_type)
     }
 }
 
@@ -227,6 +223,10 @@ impl RoochAddress {
     /// RoochAddress length in hex string length: 0x + 64 data
     pub const LENGTH_HEX: usize = 66;
 
+    pub fn is_vm_or_system_reserved_address(&self) -> bool {
+        moveos_types::addresses::is_vm_or_system_reserved_address((*self).into())
+    }
+
     pub fn from_bech32(bech32: &str) -> Result<Self> {
         let (hrp, data) = bech32::decode(bech32)?;
         anyhow::ensure!(hrp == *ROOCH_HRP, "invalid rooch hrp");
@@ -281,6 +281,12 @@ impl RoochAddress {
 
     pub fn to_hex(&self) -> String {
         format!("{:x}", self.0)
+    }
+}
+
+impl std::cmp::PartialEq<AccountAddress> for RoochAddress {
+    fn eq(&self, other: &AccountAddress) -> bool {
+        &self.0 .0 == other.deref()
     }
 }
 
@@ -759,6 +765,31 @@ impl From<bitcoin::address::Payload> for BitcoinAddress {
     }
 }
 
+impl From<bitcoin::ScriptBuf> for BitcoinAddress {
+    fn from(script: bitcoin::ScriptBuf) -> Self {
+        Self::from(&script)
+    }
+}
+
+impl From<&bitcoin::ScriptBuf> for BitcoinAddress {
+    fn from(script: &bitcoin::ScriptBuf) -> Self {
+        let address_opt = bitcoin::address::Payload::from_script(script).ok();
+        let payload: Option<Payload> = match address_opt {
+            None => {
+                if script.is_p2pk() {
+                    let p2pk_pubkey = script.p2pk_public_key();
+                    p2pk_pubkey
+                        .map(|pubkey| bitcoin::address::Payload::PubkeyHash(pubkey.pubkey_hash()))
+                } else {
+                    None
+                }
+            }
+            Some(address_opt) => Some(address_opt),
+        };
+        payload.map(|payload| payload.into()).unwrap_or_default()
+    }
+}
+
 impl From<BitcoinAddress> for MultiChainAddress {
     fn from(address: BitcoinAddress) -> Self {
         Self::new(RoochMultiChainID::Bitcoin, address.bytes)
@@ -870,6 +901,7 @@ impl ParsedAddress {
 mod test {
     use super::*;
     use bitcoin::hex::DisplayHex;
+    use bitcoin::ScriptBuf;
     use std::{fmt::Debug, vec};
 
     #[test]
@@ -1000,7 +1032,7 @@ mod test {
 
         let bytes = bcs::to_bytes(&rooch_address).unwrap();
         assert!(bytes.len() == 32);
-        let rooch_address_from_bytes = bcs::from_bytes(&bytes).unwrap();
+        let rooch_address_from_bytes: RoochAddress = bcs::from_bytes(&bytes).unwrap();
         assert_eq!(rooch_address, rooch_address_from_bytes);
     }
 
@@ -1017,7 +1049,7 @@ mod test {
             let serialized = serde_json::to_string(&address).unwrap();
             let deserialized: RoochAddress = serde_json::from_str(&serialized).unwrap();
             assert_eq!(address, deserialized);
-            let multi_chain_address: MultiChainAddress = address.clone().into();
+            let multi_chain_address: MultiChainAddress = address.into();
             let multi_chain_address_serialized = serde_json::to_string(&multi_chain_address).unwrap();
             let multi_chain_address_deserialized: MultiChainAddress = serde_json::from_str(&multi_chain_address_serialized).unwrap();
             assert_eq!(multi_chain_address, multi_chain_address_deserialized);
@@ -1036,7 +1068,7 @@ mod test {
             address.address_type().unwrap(),
             bitcoin::AddressType::P2wpkh
         );
-        println!("bitcoin address from script {}", address.to_string());
+        println!("bitcoin address from script {}", address);
         assert_eq!(
             address.to_string(),
             // "tb1qjlxl7n7na4hcsh25554hn4azzsg89t3ljdldnj"
@@ -1108,7 +1140,7 @@ mod test {
 
     #[test]
     pub fn test_bitcoin_address_to_rooch_address() -> Result<()> {
-        let bitcoin_address_strs = vec![
+        let bitcoin_address_strs = [
             "18cBEMRxXHqzWWCxZNtU91F5sbUNKhL5PX",
             "bc1q262qeyyhdakrje5qaux8m2a3r4z8sw8vu5mysh",
         ];
@@ -1168,5 +1200,50 @@ mod test {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_from_bitcoin_tx_out() {
+        // p2pk pubkey, not a script should return empty address
+        let script =  ScriptBuf::from_hex("04f254e36949ec1a7f6e9548f16d4788fb321f429b2c7d2eb44480b2ed0195cbf0c3875c767fe8abb2df6827c21392ea5cc934240b9ac46c6a56d2bd13dd0b17a9").unwrap();
+        let bitcoin_address = BitcoinAddress::from(script);
+        assert_eq!(BitcoinAddress::default(), bitcoin_address);
+        // p2pk script(outpoint: e1be133be54851d21f34666ae45211d6e76d60491cecfef17bba90731eb8f42a:0)
+        let script =  ScriptBuf::from_hex("4104f254e36949ec1a7f6e9548f16d4788fb321f429b2c7d2eb44480b2ed0195cbf0c3875c767fe8abb2df6827c21392ea5cc934240b9ac46c6a56d2bd13dd0b17a9ac").unwrap();
+        assert!(script.is_p2pk());
+        let bitcoin_address = BitcoinAddress::from(script);
+        assert_eq!(
+            "1DR5CqnzFLDmPZ7h94RHTxLV7u19xkS5rn",
+            bitcoin_address.to_string()
+        );
+        // p2pk script(outpoint: a3b0e9e7cddbbe78270fa4182a7675ff00b92872d8df7d14265a2b1e379a9d33:0)
+        let script = ScriptBuf::from_hex("4104ea1feff861b51fe3f5f8a3b12d0f4712db80e919548a80839fc47c6a21e66d957e9c5d8cd108c7a2d2324bad71f9904ac0ae7336507d785b17a2c115e427a32fac").unwrap();
+        let bitcoin_address = BitcoinAddress::from(script);
+        assert_eq!(
+            "1BBz9Z15YpELQ4QP5sEKb1SwxkcmPb5TMs",
+            bitcoin_address.to_string()
+        );
+        // p2ms script(outpoint: a353a7943a2b38318bf458b6af878b8384f48a6d10aad5b827d0550980abe3f0:0)
+        let script = ScriptBuf::from_hex("0014f29f9316f0f1e48116958216a8babd353b491dae").unwrap();
+        let bitcoin_address = BitcoinAddress::from(script);
+        assert_eq!(
+            "bc1q720ex9hs78jgz954sgt23w4ax5a5j8dwjj5kkm",
+            bitcoin_address.to_string()
+        );
+        // invalid p2pk pubkey(outpoint: 41a3e9ee1910a2d40dd217bbc9fd3638c40d13c8fdda8a0aa9d49a2b4a199422:2)
+        let script = ScriptBuf::from_hex(
+            "036c6565662c206f6e7464656b2c2067656e6965742e2e2e202020202020202020",
+        )
+        .unwrap();
+        let bitcoin_address = BitcoinAddress::from(script);
+        assert_eq!(BitcoinAddress::default(), bitcoin_address);
+        // invalid p2pk script(outpoint: 41a3e9ee1910a2d40dd217bbc9fd3638c40d13c8fdda8a0aa9d49a2b4a199422:2)
+        let script = ScriptBuf::from_hex(
+            "21036c6565662c206f6e7464656b2c2067656e6965742e2e2e202020202020202020ac",
+        )
+        .unwrap();
+        assert!(script.is_p2pk());
+        let bitcoin_address = BitcoinAddress::from(script);
+        assert_eq!(BitcoinAddress::default(), bitcoin_address);
     }
 }

@@ -5,8 +5,11 @@ use crate::store::sqlite_store::SqliteIndexerStore;
 use crate::store::traits::IndexerStoreTrait;
 use crate::utils::create_all_tables_if_not_exists;
 use anyhow::Result;
+use diesel::connection::SimpleConnection;
 use diesel::r2d2::ConnectionManager;
 use diesel::sqlite::SqliteConnection;
+use diesel::ConnectionError::BadConnection;
+use diesel::RunQueryDsl;
 use errors::IndexerError;
 use once_cell::sync::Lazy;
 use rooch_types::indexer::event::IndexerEvent;
@@ -16,6 +19,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::string::ToString;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 pub mod actor;
@@ -31,10 +35,11 @@ pub mod utils;
 
 /// Type alias to improve readability.
 pub type IndexerResult<T> = Result<T, IndexerError>;
+
+pub const DEFAULT_BUSY_TIMEOUT: u64 = 5000; // millsecond
 pub type IndexerTableName = &'static str;
 pub const INDEXER_EVENTS_TABLE_NAME: IndexerTableName = "events";
 pub const INDEXER_OBJECT_STATES_TABLE_NAME: IndexerTableName = "object_states";
-// pub const INDEXER_TABLE_CHANGE_SETS_TABLE_NAME: IndexerTableName = "object_changes";
 pub const INDEXER_TRANSACTIONS_TABLE_NAME: IndexerTableName = "transactions";
 
 /// Please note that adding new indexer table needs to be added in vec simultaneously.
@@ -42,7 +47,6 @@ static INDEXER_VEC_TABLE_NAME: Lazy<Vec<IndexerTableName>> = Lazy::new(|| {
     vec![
         INDEXER_EVENTS_TABLE_NAME,
         INDEXER_OBJECT_STATES_TABLE_NAME,
-        // INDEXER_TABLE_CHANGE_SETS_TABLE_NAME,
         INDEXER_TRANSACTIONS_TABLE_NAME,
     ]
 });
@@ -193,11 +197,17 @@ pub struct SqliteConnectionPoolConfig {
 }
 
 impl SqliteConnectionPoolConfig {
-    const DEFAULT_POOL_SIZE: u32 = 30;
-    const DEFAULT_CONNECTION_TIMEOUT: u64 = 30;
+    const DEFAULT_POOL_SIZE: u32 = 16;
+    const DEFAULT_CONNECTION_TIMEOUT: u64 = 120; // second
 
     fn connection_config(&self) -> SqliteConnectionConfig {
-        SqliteConnectionConfig { read_only: false }
+        let locker = Arc::new(RwLock::new(0));
+        SqliteConnectionConfig {
+            read_only: false,
+            enable_wal: true,
+            busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            locker,
+        }
     }
 
     pub fn set_pool_size(&mut self, size: u32) {
@@ -227,10 +237,13 @@ impl Default for SqliteConnectionPoolConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct SqliteConnectionConfig {
     // SQLite does not support the statement_timeout parameter
     read_only: bool,
+    enable_wal: bool,
+    busy_timeout: u64,
+    locker: Arc<RwLock<u64>>,
 }
 
 impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
@@ -240,16 +253,36 @@ impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
         &self,
         conn: &mut SqliteConnection,
     ) -> std::result::Result<(), diesel::r2d2::Error> {
-        use diesel::{sql_query, RunQueryDsl};
+        let mut locker_cnt = self
+            .locker
+            .write()
+            .map_err(|e| diesel::r2d2::Error::ConnectionError(BadConnection(e.to_string())))?;
+        *locker_cnt += 1;
+        log::trace!(
+            "Sqlite CustomizeConnection on_acquire connection [rw:{}]",
+            *locker_cnt
+        );
+        // https://github.com/diesel-rs/diesel/issues/2365
+        diesel::sql_query(format!("PRAGMA busy_timeout = {};", self.busy_timeout))
+            .execute(conn)
+            .map_err(diesel::r2d2::Error::QueryError)?;
 
-        // This will disable uncommitted reads, putting the connection into read-only mode
+        let mut pragma_builder = String::new();
         if self.read_only {
-            sql_query("PRAGMA read_uncommitted = 0")
-                .execute(conn)
-                .map_err(diesel::r2d2::Error::QueryError)?;
+            pragma_builder.push_str("PRAGMA query_only = true;");
         }
+        // WAL mode has better write-concurrency. When synchronous is NORMAL it will fsync only in critical moments
+        if self.enable_wal {
+            pragma_builder.push_str("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+        }
+        conn.batch_execute(&pragma_builder)
+            .map_err(diesel::r2d2::Error::QueryError)?;
 
         Ok(())
+    }
+
+    fn on_release(&self, _conn: SqliteConnection) {
+        log::trace!("Sqlite CustomizeConnection on_release connection");
     }
 }
 

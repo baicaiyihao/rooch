@@ -1,8 +1,6 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
-
 use crate::gas::table::{
     get_gas_schedule_entries, initial_cost_schedule, ClassifiedGasMeter, CostTable, MoveOSGasMeter,
 };
@@ -12,6 +10,7 @@ use backtrace::Backtrace;
 use move_binary_format::errors::VMError;
 use move_binary_format::errors::{vm_status_of_result, Location, PartialVMError, VMResult};
 use move_core_types::identifier::IdentStr;
+use move_core_types::value::MoveTypeLayout;
 use move_core_types::vm_status::{KeptVMStatus, VMStatus};
 use move_core_types::{
     account_address::AccountAddress, ident_str, identifier::Identifier, vm_status::StatusCode,
@@ -25,21 +24,22 @@ use moveos_store::transaction_store::TransactionDBStore;
 use moveos_store::MoveOSStore;
 use moveos_types::addresses::MOVEOS_STD_ADDRESS;
 use moveos_types::function_return_value::FunctionResult;
-use moveos_types::moveos_std::event::EventID;
-use moveos_types::moveos_std::gas_schedule::GasScheduleUpdated;
-use moveos_types::moveos_std::object::RootObjectEntity;
+use moveos_types::moveos_std::event::Event;
+use moveos_types::moveos_std::gas_schedule::{GasScheduleConfig, GasScheduleUpdated};
+use moveos_types::moveos_std::object::ObjectMeta;
 use moveos_types::moveos_std::tx_context::TxContext;
 use moveos_types::moveos_std::tx_result::TxResult;
 use moveos_types::startup_info::StartupInfo;
-use moveos_types::state::{MoveStructState, MoveStructType};
+use moveos_types::state::{MoveStructState, MoveStructType, ObjectState};
 use moveos_types::state_resolver::RootObjectResolver;
+use moveos_types::transaction::FunctionCall;
 use moveos_types::transaction::{
     MoveOSTransaction, RawTransactionOutput, TransactionOutput, VerifiedMoveAction,
     VerifiedMoveOSTransaction,
 };
-use moveos_types::{h256::H256, transaction::FunctionCall};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct GasPaymentAccount {
@@ -129,14 +129,16 @@ impl MoveOS {
     pub fn init_genesis(
         &self,
         genesis_tx: MoveOSTransaction,
-    ) -> Result<(H256, u64, TransactionOutput)> {
-        self.verify_and_execute_genesis_tx(genesis_tx)
+        genesis_objects: Vec<(ObjectState, MoveTypeLayout)>,
+    ) -> Result<TransactionOutput> {
+        self.verify_and_execute_genesis_tx(genesis_tx, genesis_objects)
     }
 
     fn verify_and_execute_genesis_tx(
         &self,
         tx: MoveOSTransaction,
-    ) -> Result<(H256, u64, TransactionOutput)> {
+        genesis_objects: Vec<(ObjectState, MoveTypeLayout)>,
+    ) -> Result<TransactionOutput> {
         let MoveOSTransaction {
             root,
             ctx,
@@ -146,7 +148,7 @@ impl MoveOS {
         } = tx;
 
         let resolver = RootObjectResolver::new(root, &self.db);
-        let mut session = self.vm.new_genesis_session(&resolver, ctx);
+        let mut session = self.vm.new_genesis_session(&resolver, ctx, genesis_objects);
 
         let verified_action = session.verify_move_action(action).map_err(|e| {
             log::error!("verify_genesis_tx error:{:?}", e);
@@ -169,17 +171,16 @@ impl MoveOS {
         if raw_output.status != KeptVMStatus::Executed {
             bail!("genesis tx should success, error: {:?}", raw_output.status);
         }
-        let (state_root, size, event_ids) = self.apply_transaction_output(raw_output.clone())?;
-        let output = TransactionOutput::new(raw_output, event_ids);
+        let output = self.apply_transaction_output(raw_output.clone())?;
         log::info!(
             "execute genesis tx state_root:{:?}, state_size:{}",
-            state_root,
-            size
+            output.changeset.state_root,
+            output.changeset.global_size
         );
-        Ok((state_root, size, output))
+        Ok(output)
     }
 
-    fn load_cost_table(&self, root: &RootObjectEntity) -> VMResult<CostTable> {
+    fn load_cost_table(&self, root: &ObjectMeta) -> VMResult<CostTable> {
         // We use a scoped lock here to avoid holding the lock for a long time.
         {
             let rlock = self.cost_table.read();
@@ -274,6 +275,7 @@ impl MoveOS {
                 action
             );
         }
+        let is_system_call = ctx.is_system_call();
 
         // When a session is respawned, all the variables in TxContext kv store will be cleaned.
         // The variables in TxContext kv store before this executions should not be cleaned,
@@ -284,19 +286,22 @@ impl MoveOS {
         let mut gas_meter = MoveOSGasMeter::new(cost_table, ctx.max_gas_amount);
         gas_meter.charge_io_write(ctx.tx_size)?;
 
-        // Temporary behavior, will enable this in the future.
-        // gas_meter.charge_io_write(ctx.tx_size)?;
-
         let resolver = RootObjectResolver::new(root, &self.db);
         let mut session = self.vm.new_session(&resolver, ctx, gas_meter);
 
-        // system pre_execute
-        // we do not charge gas for system_pre_execute function
-        session
-            .execute_function_call(self.system_pre_execute_functions.clone(), false)
-            .expect("system_pre_execute should not fail.");
+        //We do not execute pre_execute and post_execute functions for system call
+        if !is_system_call {
+            // system pre_execute
+            // we do not charge gas for system_pre_execute function
+            session
+                .execute_function_call(self.system_pre_execute_functions.clone(), false)
+                .expect("system_pre_execute should not fail.");
+        } else {
+            debug_assert!(pre_execute_functions.is_empty());
+            debug_assert!(post_execute_functions.is_empty());
+        }
 
-        match self.execute_user_action(
+        match self.execute_action(
             &mut session,
             action.clone(),
             pre_execute_functions.clone(),
@@ -305,23 +310,24 @@ impl MoveOS {
             Ok(status) => {
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
-                        "execute_user_action ok tx(hash:{}) vm_status:{:?}",
+                        "execute_action ok tx(hash:{}) vm_status:{:?}",
                         tx_hash,
                         status
                     );
                 }
-                self.execution_cleanup(session, status, Some(action))
+                self.execution_cleanup(is_system_call, session, status)
             }
             Err((vm_err, need_respawn)) => {
                 if log::log_enabled!(log::Level::Warn) {
                     log::warn!(
-                        "execute_user_action error tx(hash:{}) vm_err:{:?} need_respawn:{}",
+                        "execute_action error tx(hash:{}) vm_err:{:?} need_respawn:{}",
                         tx_hash,
                         vm_err,
                         need_respawn
                     );
                 }
-                if need_respawn {
+                // If it is a system call, we should not respawn the session.
+                if !is_system_call && need_respawn {
                     let mut s = session.respawn(system_env);
                     //Because the session is respawned, the pre_execute function should be called again.
                     s.execute_function_call(self.system_pre_execute_functions.clone(), false)
@@ -332,55 +338,59 @@ impl MoveOS {
                         post_execute_functions,
                     );
                     // when respawn session, VM error occurs in user move action or post execution.
-                    // We just cleanup with the VM error return by `execute_user_action`, ignore
+                    // We just cleanup with the VM error return by `execute_action`, ignore
                     // the result of `execute_pre_and_post`
                     // TODO: do we need to handle the result of `execute_pre_and_post` after respawn?
-                    self.execution_cleanup(s, vm_err.into_vm_status(), None)
+                    self.execution_cleanup(is_system_call, s, vm_err.into_vm_status())
                 } else {
-                    self.execution_cleanup(session, vm_err.into_vm_status(), None)
+                    self.execution_cleanup(is_system_call, session, vm_err.into_vm_status())
                 }
             }
         }
     }
 
-    pub fn execute_and_apply(
-        &self,
-        tx: VerifiedMoveOSTransaction,
-    ) -> Result<(H256, u64, TransactionOutput)> {
+    pub fn execute_and_apply(&self, tx: VerifiedMoveOSTransaction) -> Result<TransactionOutput> {
         let raw_output = self.execute(tx)?;
-        let (state_root, size, event_ids) = self.apply_transaction_output(raw_output.clone())?;
-        let output = TransactionOutput::new(raw_output, event_ids);
-
-        Ok((state_root, size, output))
+        let output = self.apply_transaction_output(raw_output.clone())?;
+        Ok(output)
     }
 
-    fn apply_transaction_output(
-        &self,
-        output: RawTransactionOutput,
-    ) -> Result<(H256, u64, Vec<EventID>)> {
-        //TODO move apply change set to a suitable place, and make MoveOS stateless?
+    fn apply_transaction_output(&self, output: RawTransactionOutput) -> Result<TransactionOutput> {
         let RawTransactionOutput {
-            status: _,
-            changeset,
-            events,
-            gas_used: _,
-            is_upgrade: _,
+            status,
+            mut changeset,
+            events: tx_events,
+            gas_used,
+            is_upgrade,
         } = output;
 
-        let (new_state_root, size) = self
-            .db
+        self.db
             .get_state_store()
-            .apply_change_set(changeset)
+            .apply_change_set(&mut changeset)
             .map_err(|e| {
                 PartialVMError::new(StatusCode::STORAGE_ERROR)
                     .with_message(e.to_string())
                     .finish(Location::Undefined)
             })?;
-        let event_ids = self.db.get_event_store().save_events(events).map_err(|e| {
-            PartialVMError::new(StatusCode::STORAGE_ERROR)
-                .with_message(e.to_string())
-                .finish(Location::Undefined)
-        })?;
+        let event_ids = self
+            .db
+            .get_event_store()
+            .save_events(tx_events.clone())
+            .map_err(|e| {
+                PartialVMError::new(StatusCode::STORAGE_ERROR)
+                    .with_message(e.to_string())
+                    .finish(Location::Undefined)
+            })?;
+        let events = tx_events
+            .clone()
+            .into_iter()
+            .zip(event_ids)
+            .map(|(event, event_id)| Event::new_with_event_id(event_id, event))
+            .collect::<Vec<_>>();
+
+        let new_state_root = changeset.state_root;
+        let size = changeset.global_size;
+
         self.db
             .get_config_store()
             .save_startup_info(StartupInfo::new(new_state_root, size))
@@ -389,13 +399,16 @@ impl MoveOS {
                     .with_message(e.to_string())
                     .finish(Location::Undefined)
             })?;
-        Ok((new_state_root, size, event_ids))
+
+        Ok(TransactionOutput::new(
+            status, changeset, events, gas_used, is_upgrade,
+        ))
     }
 
     /// Execute readonly view function
     pub fn execute_view_function(
         &self,
-        root: RootObjectEntity,
+        root: ObjectMeta,
         function_call: FunctionCall,
     ) -> FunctionResult {
         //TODO allow user to specify the sender
@@ -406,11 +419,17 @@ impl MoveOS {
 
     pub fn execute_readonly_function(
         &self,
-        root: RootObjectEntity,
+        root: ObjectMeta,
         tx_context: &TxContext,
         function_call: FunctionCall,
     ) -> FunctionResult {
-        //TODO limit the view function max gas usage
+        if tx_context.max_gas_amount > GasScheduleConfig::READONLY_MAX_GAS_AMOUNT {
+            return FunctionResult::err(
+                PartialVMError::new(StatusCode::MAX_GAS_UNITS_EXCEEDS_MAX_GAS_UNITS_BOUND)
+                    .with_message("Max gas amount too large for readonly function".to_string())
+                    .finish(Location::Undefined),
+            );
+        }
         let cost_table = match self.load_cost_table(&root) {
             Ok(cost_table) => cost_table,
             Err(e) => {
@@ -418,7 +437,7 @@ impl MoveOS {
             }
         };
         let mut gas_meter = MoveOSGasMeter::new(cost_table, tx_context.max_gas_amount);
-        gas_meter.set_metering(false);
+        gas_meter.set_metering(true);
         let resolver = RootObjectResolver::new(root, &self.db);
         let mut session = self
             .vm
@@ -442,10 +461,10 @@ impl MoveOS {
         }
     }
 
-    // Execute use action with pre_execute and post_execute.
-    // Return the user action execution status if success,
+    // Execute action with pre_execute and post_execute.
+    // Return the action execution status if success,
     // else return VMError and a bool which indicate if we should respawn the session.
-    fn execute_user_action(
+    fn execute_action(
         &self,
         session: &mut MoveOSSession<'_, '_, RootObjectResolver<MoveOSStore>, MoveOSGasMeter>,
         action: VerifiedMoveAction,
@@ -501,12 +520,19 @@ impl MoveOS {
 
     fn execution_cleanup(
         &self,
+        is_system_call: bool,
         mut session: MoveOSSession<'_, '_, RootObjectResolver<MoveOSStore>, MoveOSGasMeter>,
         status: VMStatus,
-        _action_opt: Option<VerifiedMoveAction>,
     ) -> Result<RawTransactionOutput> {
         let kept_status = match status.keep_or_discard() {
-            Ok(kept_status) => kept_status,
+            Ok(kept_status) => {
+                if is_system_call && kept_status != KeptVMStatus::Executed {
+                    // system call should always success
+                    let backtrace = Backtrace::new();
+                    panic!("System call failed: {:?}\n{:?}", kept_status, backtrace);
+                }
+                kept_status
+            }
             Err(discard_status) => {
                 //This should not happen, if it happens, it means that the VM or verifer has a bug
                 let backtrace = Backtrace::new();
@@ -514,17 +540,8 @@ impl MoveOS {
             }
         };
 
-        //TODO gas_free
-        // let mut pay_gas = false;
-        // let gas_payment_account_opt = session.tx_context().get::<GasPaymentAccount>()?;
-
-        // if let Some(gas_payment_account) = gas_payment_account_opt {
-        //     pay_gas = gas_payment_account.pay_gas_by_module_account;
-        // }
-
         // update txn result to TxContext
         let gas_used = session.query_gas_used();
-        //TODO is it a good approach to add tx_result to TxContext?
         let tx_result = TxResult::new(&kept_status, gas_used);
         session
             .object_runtime
@@ -532,16 +549,14 @@ impl MoveOS {
             .add_to_tx_context(tx_result)
             .expect("Add tx_result to TxContext should always success");
 
-        // system post_execute
-        // we do not charge gas for system_post_execute function
-        session
-            .execute_function_call(self.system_post_execute_functions.clone(), false)
-            .expect("system_post_execute should not fail.");
-
-        //TODO gas_free
-        // if pay_gas {
-        //     self.execute_gas_charge_post(&mut session, &action_opt.unwrap())?;
-        // }
+        // We do not execute post_execute function for system call
+        if !is_system_call {
+            // system post_execute
+            // we do not charge gas for system_post_execute function
+            session
+                .execute_function_call(self.system_post_execute_functions.clone(), false)
+                .expect("system_post_execute should not fail.");
+        }
 
         let gas_schedule_updated = session.tx_context().get::<GasScheduleUpdated>()?;
         if let Some(_updated) = gas_schedule_updated {

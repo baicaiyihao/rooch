@@ -25,8 +25,7 @@ use once_cell::sync::Lazy;
 use crate::error_code::ErrorCode;
 use crate::metadata::{
     check_metadata_format, extract_module_name, get_metadata_from_compiled_module,
-    is_allowed_data_struct_type, is_allowed_input_struct, is_defined_or_allowed_in_current_module,
-    is_std_option_type,
+    is_allowed_input_struct, is_defined_or_allowed_in_current_module, is_std_option_type,
 };
 
 const MAX_DATA_STRUCT_TYPE_DEPTH: u64 = 16;
@@ -212,7 +211,7 @@ fn check_transaction_input_type_at_publish(
         }
         Struct(sid) | StructInstantiation(sid, _) => {
             let struct_full_name = struct_full_name_from_sid(sid, module_bin_view);
-            is_allowed_input_struct(struct_full_name, false)
+            is_allowed_input_struct(struct_full_name)
         }
 
         _ => {
@@ -229,7 +228,7 @@ fn is_allowed_reference_types_at_publish(
     match bt {
         SignatureToken::Struct(sid) | SignatureToken::StructInstantiation(sid, _) => {
             let struct_full_name = struct_full_name_from_sid(sid, module_bin_view);
-            is_allowed_input_struct(struct_full_name, true)
+            is_allowed_input_struct(struct_full_name)
         }
         _ => false,
     }
@@ -271,7 +270,7 @@ where
         Struct(idx) | StructInstantiation(idx, _) => {
             if let Some(st) = session.get_struct_type(*idx) {
                 let full_name = format!("{}::{}", st.module.short_str_lossless(), st.name);
-                is_allowed_input_struct(full_name, false)
+                is_allowed_input_struct(full_name)
             } else {
                 false
             }
@@ -308,7 +307,7 @@ where
             );
             if let Some(st) = st_option {
                 let full_name = format!("{}::{}", st.module.short_str_lossless(), st.name);
-                is_allowed_input_struct(full_name, true)
+                is_allowed_input_struct(full_name)
             } else {
                 false
             }
@@ -1004,9 +1003,9 @@ fn check_field_type(
                 view.identifier_at(struct_handle.name)
             );
             // allow string::String, ascii::String as data struct
-            if is_allowed_data_struct_type(full_struct_name.as_str()) {
-                return Ok(true);
-            }
+            //if is_allowed_data_struct_type(full_struct_name.as_str()) {
+            //    return Ok(true);
+            //}
 
             let is_data_struct_opt = data_structs_map.get(full_struct_name.as_str());
             if is_data_struct_opt.is_none() {
@@ -1386,9 +1385,9 @@ fn validate_struct<Resolver>(
 where
     Resolver: ModuleResolver,
 {
-    if is_allowed_data_struct_type(struct_name) {
-        return (true, ErrorCode::UNKNOWN_CODE);
-    }
+    //if is_allowed_data_struct_type(struct_name) {
+    //    return (true, ErrorCode::UNKNOWN_CODE);
+    //}
 
     let (is_defined_in_current_module, other_module_id) =
         struct_in_current_module(current_module, struct_handle_idx);
@@ -1448,7 +1447,7 @@ where
             None => {}
             Some(metadata) => {
                 let data_struct_maps = metadata.data_struct_map;
-                if data_struct_maps.get(struct_name).is_some() {
+                if data_struct_maps.contains_key(struct_name) {
                     return (true, ErrorCode::UNKNOWN_CODE);
                 }
             }
@@ -1461,7 +1460,7 @@ where
             None => {}
             Some(metadata) => {
                 let data_struct_maps = metadata.data_struct_map;
-                if data_struct_maps.get(struct_name).is_some() {
+                if data_struct_maps.contains_key(struct_name) {
                     return (true, ErrorCode::UNKNOWN_CODE);
                 }
             }

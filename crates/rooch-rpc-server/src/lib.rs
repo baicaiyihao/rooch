@@ -1,19 +1,21 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::metrics_server::start_basic_prometheus_server;
 use crate::server::btc_server::BtcServer;
 use crate::server::rooch_server::RoochServer;
 use crate::service::aggregate_service::AggregateService;
 use crate::service::rpc_logger::RpcLogger;
 use crate::service::rpc_service::RpcService;
 use anyhow::{ensure, Error, Result};
+use axum::http::{HeaderValue, Method};
 use coerce::actor::scheduler::timer::Timer;
 use coerce::actor::{system::ActorSystem, IntoActor};
-use hyper::header::HeaderValue;
-use hyper::Method;
+use jsonrpsee::server::middleware::rpc::RpcServiceBuilder;
 use jsonrpsee::server::ServerBuilder;
 use jsonrpsee::RpcModule;
 use raw_store::errors::RawStoreError;
+use raw_store::metrics::DBMetrics;
 use rooch_config::server_config::ServerConfig;
 use rooch_config::{RoochOpt, ServerOpt};
 use rooch_da::actor::da::DAActor;
@@ -34,20 +36,22 @@ use rooch_proposer::proxy::ProposerProxy;
 use rooch_relayer::actor::messages::RelayTick;
 use rooch_relayer::actor::relayer::RelayerActor;
 use rooch_rpc_api::api::RoochRpcModule;
+use rooch_rpc_api::RpcError;
 use rooch_sequencer::actor::sequencer::SequencerActor;
 use rooch_sequencer::proxy::SequencerProxy;
 use rooch_types::address::RoochAddress;
 use rooch_types::error::{GenesisError, RoochError};
 use rooch_types::rooch_network::BuiltinChainID;
 use serde_json::json;
-use std::env;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::time::Duration;
+use std::{env, panic, process};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{error, info};
 
+pub mod metrics_server;
 pub mod server;
 pub mod service;
 
@@ -58,6 +62,7 @@ pub struct ServerHandle {
     handle: jsonrpsee::server::ServerHandle,
     timers: Vec<Timer>,
     _opt: RoochOpt,
+    _prometheus_registry: prometheus::Registry,
 }
 
 impl ServerHandle {
@@ -88,7 +93,6 @@ impl Service {
         Self { handle: None }
     }
 
-    // pub async fn start(&mut self, opt: &RoochOpt, key_keypair: Option<RoochKeyPair>) -> Result<()> {
     pub async fn start(&mut self, opt: RoochOpt, server_opt: ServerOpt) -> Result<()> {
         self.handle = Some(start_server(opt, server_opt).await?);
         Ok(())
@@ -162,8 +166,23 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
     // tracing_subscriber can only be inited once.
     let _ = tracing_subscriber::fmt::try_init();
 
+    //Exit the process when some thread panic
+    // take_hook() returns the default hook in case when a custom one is not set
+    let orig_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // invoke the default handler and exit the process
+        orig_hook(panic_info);
+        error!("Panic occurred:\n {} \n exit the process", panic_info);
+        process::exit(1);
+    }));
+
     let config = ServerConfig::new_with_port(opt.port());
     let actor_system = ActorSystem::global_system();
+
+    // start prometheus server
+    let prometheus_registry = start_basic_prometheus_server();
+    // Initialize metrics to track db usage before creating any stores
+    DBMetrics::init(&prometheus_registry);
 
     //Init store
     let store_config = opt.store_config();
@@ -201,7 +220,7 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
         );
     }
 
-    let genesis = RoochGenesis::load_or_init(network, &rooch_db)?;
+    let genesis = RoochGenesis::load_or_init(network.clone(), &rooch_db)?;
 
     let root = match rooch_db.latest_root()? {
         Some(root) => root,
@@ -210,7 +229,7 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
     info!(
         "The latest Root object state root: {:?}, size: {}",
         root.state_root(),
-        root.size
+        root.size()
     );
 
     let executor_actor =
@@ -261,7 +280,7 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
     timers.push(proposer_timer);
 
     // Init indexer
-    let indexer_executor = IndexerActor::new(root, indexer_store, moveos_store)?
+    let indexer_executor = IndexerActor::new(root, indexer_store)?
         .into_actor(Some("Indexer"), &actor_system)
         .await?;
     let indexer_reader_executor = IndexerReaderActor::new(indexer_reader)?
@@ -281,6 +300,8 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
     let processor_proxy = PipelineProcessorProxy::new(processor.into());
 
     let rpc_service = RpcService::new(
+        network.chain_id.id,
+        network.genesis_config.bitcoin_network,
         executor_proxy.clone(),
         sequencer_proxy,
         indexer_proxy,
@@ -295,7 +316,6 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
         let relayer = RelayerActor::new(
             executor_proxy,
             processor_proxy.clone(),
-            sequencer_keypair.copy(),
             ethereum_relayer_config,
             bitcoin_relayer_config,
         )
@@ -328,7 +348,7 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
         .allow_methods([Method::POST])
         // Allow requests from any origin
         .allow_origin(acl)
-        .allow_headers([hyper::header::CONTENT_TYPE]);
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
 
     let middleware = tower::ServiceBuilder::new()
         .layer(TraceLayer::new_for_http())
@@ -336,10 +356,12 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
 
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
 
+    let rpc_middleware = RpcServiceBuilder::new().layer_fn(RpcLogger);
+
     // Build server
     let server = ServerBuilder::default()
-        .set_logger(RpcLogger)
-        .set_middleware(middleware)
+        .set_http_middleware(middleware)
+        .set_rpc_middleware(rpc_middleware)
         .build(&addr)
         .await?;
 
@@ -348,12 +370,18 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
         rpc_service.clone(),
         aggregate_service.clone(),
     ))?;
+    rpc_module_builder.register_module(BtcServer::new(rpc_service.clone()).await?)?;
     rpc_module_builder
-        .register_module(BtcServer::new(rpc_service.clone(), aggregate_service.clone()).await?)?;
+        .module
+        .register_method("rpc.discover", move |_, _, _| {
+            Ok::<rooch_open_rpc::Project, RpcError>(
+                rooch_open_rpc_spec_builder::build_rooch_rpc_spec(),
+            )
+        })?;
 
     // let rpc_api = build_rpc_api(rpc_api);
     let methods_names = rpc_module_builder.module.method_names().collect::<Vec<_>>();
-    let handle = server.start(rpc_module_builder.module)?;
+    let handle = server.start(rpc_module_builder.module);
 
     info!("JSON-RPC HTTP Server start listening {:?}", addr);
     info!("Available JSON-RPC methods : {:?}", methods_names);
@@ -362,6 +390,7 @@ pub async fn run_start_server(opt: RoochOpt, server_opt: ServerOpt) -> Result<Se
         handle,
         timers,
         _opt: opt,
+        _prometheus_registry: prometheus_registry,
     })
 }
 
@@ -370,8 +399,8 @@ fn _build_rpc_api<M: Send + Sync + 'static>(mut rpc_module: RpcModule<M>) -> Rpc
     available_methods.sort();
 
     rpc_module
-        .register_method("rpc_methods", move |_, _| {
-            Ok(json!({
+        .register_method("rpc_methods", move |_, _, _| {
+            Ok::<serde_json::Value, RpcError>(json!({
                 "methods": available_methods,
             }))
         })

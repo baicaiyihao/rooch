@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::types::LocalAccount;
-use crate::key_derive::{generate_derivation_path, generate_new_key_pair};
+use crate::key_derive::{generate_derivation_path, generate_new_key_pair, ROOCH_SECRET_KEY_PREFIX};
+use bitcoin::bech32::{encode, Bech32, Hrp};
+use rooch_types::crypto::SignatureScheme;
 use rooch_types::framework::session_key::SessionKey;
 use rooch_types::key_struct::{MnemonicData, MnemonicResult};
 use rooch_types::{
@@ -25,7 +27,7 @@ pub trait AccountKeystore {
         let result =
             generate_new_key_pair(mnemonic_phrase, derivation_path, word_length, password)?;
         let new_address = result.address;
-        self.add_address_encryption_data(
+        self.add_address_encryption_data_to_keys(
             new_address,
             result.key_pair_data.private_key_encryption.clone(),
         )?;
@@ -39,6 +41,11 @@ pub trait AccountKeystore {
 
     fn init_mnemonic_data(&mut self, mnemonic_data: MnemonicData) -> Result<(), anyhow::Error>;
 
+    fn add_addresses_to_mnemonic_data(
+        &mut self,
+        address: RoochAddress,
+    ) -> Result<(), anyhow::Error>;
+
     fn get_mnemonic(&self, password: Option<String>) -> Result<MnemonicResult, anyhow::Error>;
 
     fn generate_and_add_new_key(
@@ -49,7 +56,6 @@ pub trait AccountKeystore {
         let mnemonic = self.get_mnemonic(password.clone())?;
         let account_index = mnemonic.mnemonic_data.addresses.len() as u32;
         let derivation_path = generate_derivation_path(account_index)?;
-
         let result = generate_new_key_pair(
             Some(mnemonic.mnemonic_phrase),
             derivation_path,
@@ -57,16 +63,40 @@ pub trait AccountKeystore {
             password,
         )?;
         let new_address = result.address;
-        self.add_address_encryption_data(
+        self.add_address_encryption_data_to_keys(
             new_address,
             result.key_pair_data.private_key_encryption.clone(),
         )?;
+        self.add_addresses_to_mnemonic_data(new_address)?;
         Ok(result)
+    }
+
+    fn export_mnemonic_phrase(
+        &mut self,
+        password: Option<String>,
+    ) -> Result<String, anyhow::Error> {
+        // load mnemonic phrase from keystore
+        let mnemonic = self.get_mnemonic(password.clone())?;
+        let mnemonic_phrase = mnemonic.mnemonic_phrase;
+        Ok(mnemonic_phrase)
+    }
+
+    fn export_private_key(&mut self, sk_bytes: &[u8]) -> Result<String, anyhow::Error> {
+        // get 33 bytes flag and secret key
+        let mut priv_key_bytes = Vec::with_capacity(sk_bytes.len() + 1);
+        // supports secp256k1 signature scheme
+        priv_key_bytes.push(SignatureScheme::Secp256k1.flag());
+        priv_key_bytes.extend_from_slice(sk_bytes);
+        // init `roochsecretkey` as HRP
+        let hrp = Hrp::parse(ROOCH_SECRET_KEY_PREFIX)?;
+        // encode hrp and 33 bytes private key using bech32 method
+        let bech32_encoded = encode::<Bech32>(hrp, &priv_key_bytes)?;
+        Ok(bech32_encoded)
     }
 
     fn get_accounts(&self, password: Option<String>) -> Result<Vec<LocalAccount>, anyhow::Error>;
 
-    fn add_address_encryption_data(
+    fn add_address_encryption_data_to_keys(
         &mut self,
         address: RoochAddress,
         encryption: EncryptionData,

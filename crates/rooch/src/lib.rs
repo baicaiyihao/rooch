@@ -4,6 +4,7 @@
 use crate::commands::event::EventCommand;
 use crate::commands::indexer::Indexer;
 use crate::commands::statedb::Statedb;
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use cli_types::CommandAction;
 use commands::{
     abi::ABI, account::Account, env::Env, genesis::Genesis, init::Init, move_cli::MoveCli,
@@ -17,7 +18,12 @@ pub mod commands;
 pub mod utils;
 
 #[derive(clap::Parser)]
-#[clap(author, version, about, long_about = None)]
+#[clap(author, version, about, long_about = None,
+styles = Styles::styled()
+.header(AnsiColor::Green.on_default() | Effects::BOLD)
+.usage(AnsiColor::Green.on_default() | Effects::BOLD)
+.literal(AnsiColor::Blue.on_default() | Effects::BOLD)
+.placeholder(AnsiColor::Cyan.on_default()))]
 pub struct RoochCli {
     #[clap(subcommand)]
     pub cmd: Command,

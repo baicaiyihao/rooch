@@ -1,29 +1,33 @@
 import {Box, Button, Container, Flex, Heading, Text} from "@radix-ui/themes";
 import {
-  SupportChain,
   useCurrentSession,
   useWallets,
-  useWalletStore,
-  useRoochClientQuery, useConnectWallet, useCurrentAccount, useCreateSessionKey
+  useRoochClientQuery, useConnectWallet, useCreateSessionKey,
+  useRoochClient,
+  useCurrentWallet
 } from "@roochnetwork/rooch-sdk-kit";
+
 import {useState} from "react";
+import { Transaction } from '@roochnetwork/rooch-sdk'
 
 // Your publish counter contract address
-const devCounterAddress = ""
+const devCounterAddress = "0xf9b10e6c760f1cadce95c664b3a3ead3c985bbe9d63bd51a9bf1760785d26a1b"
 const devCounterModule = `${devCounterAddress}::counter`
 
 function App() {
-  const account = useCurrentAccount();
   const sessionKey = useCurrentSession();
-  const connectionStatus = useWalletStore((state) => state.connectionStatus)
-  const wallets = useWallets().filter((wallet) => wallet.getChain() === SupportChain.BITCOIN)
+  const currentWallet = useCurrentWallet();
+  const client = useRoochClient()
+  const wallets = useWallets()
   const [loading, setLoading] = useState(false)
   const [sessionLoading, setSessionLoading] = useState(false)
   const {mutateAsync: connectWallet} = useConnectWallet()
   const {mutateAsync: createSessionKey} = useCreateSessionKey()
 
+  const {isConnected, status, wallet} = currentWallet
+
   let {data, error, isPending, refetch} = useRoochClientQuery("executeViewFunction", {
-    funcId: `${devCounterModule}::value`,
+    target: `${devCounterModule}::value`,
   })
 
   const handlerCreateSessionKey = () => {
@@ -39,7 +43,6 @@ function App() {
       {
         appName: "rooch_test",
         appUrl: "https://test.com",
-        maxInactiveInterval: 1000,
         scopes: defaultScopes
       },
       {
@@ -53,19 +56,29 @@ function App() {
     ).finally(() => setSessionLoading(false))
   }
 
-  const handlerIncrease = () => {
+  const handlerIncrease = async () => {
     if (loading) {
       return
     }
 
     setLoading(true)
 
-    const func = `${devCounterModule}::increase`
-
-    sessionKey?.sendTransaction(func, [], []).finally(async () => {
-      await refetch()
-      setLoading(false)
+    const tx = new Transaction()
+    tx.callFunction({
+      target: `${devCounterModule}::increase`
     })
+
+    const result = await client.signAndExecuteTransaction({
+      transaction: tx,
+      signer: sessionKey!
+    })
+
+    if (result.execution_info.status.type !== 'executed') {
+      console.log('increase failed')
+    }
+
+    refetch()
+    setLoading(false)
   }
 
   return (
@@ -85,9 +98,7 @@ function App() {
 
         {wallets.length === 0
           ? "Please install the wallet and try again"
-          : connectionStatus !== "disconnected"
-            ? connectionStatus
-            : (
+          : isConnected ? status : (
               <Box>
                 <Button
                   onClick={async () => {
@@ -110,22 +121,17 @@ function App() {
       >
         <Box mt="2">
           <Text style={{fontWeight: "bold"}}>Address: </Text>
-          <Text style={{wordWrap: "break-word"}}>{account?.address}</Text>
+          <Text style={{wordWrap: "break-word"}}>{wallet?.getBitcoinAddress().toStr()}</Text>
         </Box>
 
         <Box mt="4">
           <Text style={{fontWeight: "bold"}}>PublicKey: </Text>
-          <Text style={{wordWrap: "break-word"}}>{account?.publicKey}</Text>
+          <Text style={{wordWrap: "break-word"}}>{wallet?.getPublicKey().toString()}</Text>
         </Box>
 
         <Box mt="4">
-          <Text style={{fontWeight: "bold"}}>Compressed PublicKey: </Text>
-          <Text style={{wordWrap: "break-word"}}>{account?.compressedPublicKey}</Text>
-        </Box>
-
-        <Box mt="4">
-          <Text style={{fontWeight: "bold"}}>Session Account Address: </Text>
-          <Text style={{wordWrap: "break-word"}}>{sessionKey?.getAddress()}</Text>
+          <Text style={{fontWeight: "bold"}}>Session Address: </Text>
+          <Text style={{wordWrap: "break-word"}}>{sessionKey?.getRoochAddress()?.toStr()}</Text>
         </Box>
 
         <Heading size="3" mt="6">{sessionKey ? "Counter" : "Create session key"}</Heading>

@@ -5,11 +5,11 @@ module rooch_framework::session_key {
     use std::vector;
     use std::option::{Self, Option};
     use std::signer;
+    use moveos_std::object::ObjectID;
     use moveos_std::account;
     use moveos_std::tx_context; 
     use moveos_std::table::{Self, Table};
     use moveos_std::tx_meta::{Self, FunctionCallMeta};
-    use moveos_std::features;
     use rooch_framework::auth_validator;
     use moveos_std::timestamp;
 
@@ -112,7 +112,7 @@ module rooch_framework::session_key {
         authentication_key: vector<u8>,
         scopes: vector<SessionScope>,
         max_inactive_interval: u64) {
-        features::ensure_testnet_enabled();
+
         //Can not create new session key by the other session key
         assert!(!auth_validator::is_validate_via_session_key(), ErrorSessionKeyCreatePermissionDenied);
         let sender_addr = signer::address_of(sender);
@@ -258,6 +258,14 @@ module rooch_framework::session_key {
 
     public entry fun remove_session_key_entry(sender: &signer, authentication_key: vector<u8>) {
         remove_session_key(sender, authentication_key);
+    }
+
+    public fun get_session_keys_handle(account_address: address) : Option<ObjectID> {
+        if (!account::exists_resource<SessionKeys>(account_address)){
+            return option::none()
+        };
+        let session_keys = account::borrow_resource<SessionKeys>(account_address);
+        option::some(table::handle(&session_keys.keys))
     }
 
     #[test]

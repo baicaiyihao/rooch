@@ -1,11 +1,12 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
-use super::BytesView;
+use super::{BytesView, StrView};
 use crate::jsonrpc_types::{
     H256View, RoochOrBitcoinAddressView, TransactionExecutionInfoView, TransactionSequenceInfoView,
     TransactionView,
 };
+use bitcoin::hashes::Hash;
 use rooch_types::indexer::transaction::TransactionFilter;
 use rooch_types::transaction::{
     L1Block, L1Transaction, LedgerTransaction, LedgerTxData, TransactionWithInfo,
@@ -15,16 +16,16 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct L1BlockView {
-    pub chain_id: u64,
-    pub block_height: u64,
+    pub chain_id: StrView<u64>,
+    pub block_height: StrView<u64>,
     pub block_hash: BytesView,
 }
 
 impl From<L1Block> for L1BlockView {
     fn from(block: L1Block) -> Self {
         Self {
-            chain_id: block.chain_id.id(),
-            block_height: block.block_height,
+            chain_id: block.chain_id.id().into(),
+            block_height: block.block_height.into(),
             block_hash: block.block_hash.into(),
         }
     }
@@ -32,16 +33,32 @@ impl From<L1Block> for L1BlockView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct L1TransactionView {
-    pub chain_id: u64,
+    pub chain_id: StrView<u64>,
     pub block_hash: BytesView,
+    pub bitcoin_block_hash: Option<String>,
     pub txid: BytesView,
+    pub bitcoin_txid: Option<String>,
 }
 
 impl From<L1Transaction> for L1TransactionView {
     fn from(tx: L1Transaction) -> Self {
         Self {
-            chain_id: tx.chain_id.id(),
+            chain_id: tx.chain_id.id().into(),
+            bitcoin_block_hash: if tx.chain_id.is_bitcoin() {
+                bitcoin::BlockHash::from_slice(&tx.block_hash)
+                    .map(|hash| hash.to_string())
+                    .ok()
+            } else {
+                None
+            },
             block_hash: tx.block_hash.into(),
+            bitcoin_txid: if tx.chain_id.is_bitcoin() {
+                bitcoin::Txid::from_slice(&tx.txid)
+                    .map(|hash| hash.to_string())
+                    .ok()
+            } else {
+                None
+            },
             txid: tx.txid.into(),
         }
     }
@@ -91,7 +108,7 @@ impl LedgerTransactionView {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TransactionWithInfoView {
     pub transaction: LedgerTransactionView,
-    pub execution_info: TransactionExecutionInfoView,
+    pub execution_info: Option<TransactionExecutionInfoView>,
 }
 
 impl TransactionWithInfoView {
@@ -104,7 +121,7 @@ impl TransactionWithInfoView {
                 tx.transaction,
                 sender_bitcoin_address,
             ),
-            execution_info: tx.execution_info.into(),
+            execution_info: tx.execution_info.map(Into::into),
         }
     }
 }
@@ -121,17 +138,17 @@ pub enum TransactionFilterView {
     /// Return transactions in [start_time, end_time) interval
     TimeRange {
         /// left endpoint of time interval, milliseconds since block, inclusive
-        start_time: u64,
+        start_time: StrView<u64>,
         /// right endpoint of time interval, milliseconds since block, exclusive
-        end_time: u64,
+        end_time: StrView<u64>,
     },
     /// Return events emitted in [from_order, to_order) interval
     // #[serde(rename_all = "camelCase")]
     TxOrderRange {
         /// left endpoint of transaction order, inclusive
-        from_order: u64,
+        from_order: StrView<u64>,
         /// right endpoint of transaction order, exclusive
-        to_order: u64,
+        to_order: StrView<u64>,
     },
 }
 
@@ -147,15 +164,15 @@ impl From<TransactionFilterView> for TransactionFilter {
                 start_time,
                 end_time,
             } => Self::TimeRange {
-                start_time,
-                end_time,
+                start_time: start_time.0,
+                end_time: end_time.0,
             },
             TransactionFilterView::TxOrderRange {
                 from_order,
                 to_order,
             } => Self::TxOrderRange {
-                from_order,
-                to_order,
+                from_order: from_order.0,
+                to_order: to_order.0,
             },
         }
     }

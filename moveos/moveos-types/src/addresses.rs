@@ -21,16 +21,21 @@ pub fn is_system_reserved_address(addr: AccountAddress) -> bool {
     bytes.iter().take(31).all(|u| u == &0u8) && bytes[31] > 0u8 && bytes[31] <= 10u8
 }
 
+pub fn is_vm_or_system_reserved_address(addr: AccountAddress) -> bool {
+    //zero is vm address
+    addr == AccountAddress::ZERO || is_system_reserved_address(addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_is_system_reserved_address() {
-        assert_eq!(is_system_reserved_address(AccountAddress::ZERO), false);
-        assert_eq!(is_system_reserved_address(AccountAddress::ONE), true);
-        assert_eq!(is_system_reserved_address(new_address(11)), false);
-        assert_eq!(is_system_reserved_address(AccountAddress::random()), false);
+        assert!(!is_system_reserved_address(AccountAddress::ZERO));
+        assert!(is_system_reserved_address(AccountAddress::ONE));
+        assert!(!is_system_reserved_address(new_address(11)));
+        assert!(!is_system_reserved_address(AccountAddress::random()));
     }
 
     fn new_address(u: u8) -> AccountAddress {

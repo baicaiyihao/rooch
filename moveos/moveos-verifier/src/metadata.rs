@@ -555,7 +555,6 @@ impl<'a> ExtendedChecker<'a> {
                     self.env
                         .get_struct(mid.qualified(*sid))
                         .get_full_name_with_address(),
-                    false,
                 ) =>
             {
                 // Specific struct types are allowed
@@ -589,25 +588,21 @@ impl<'a> ExtendedChecker<'a> {
                     .env
                     .get_struct(mid.qualified(*sid))
                     .get_full_name_with_address();
-                if is_allowed_input_struct(struct_name, true) {
-                    return true;
-                }
-                false
+                is_allowed_input_struct(struct_name)
             }
             _ => false,
         }
     }
 }
 
-pub fn is_allowed_input_struct(name: String, is_ref: bool) -> bool {
+pub fn is_allowed_input_struct(name: String) -> bool {
     matches!(
         name.as_str(),
         "0x1::string::String"
             | "0x1::ascii::String"
             | "0x2::object::ObjectID"
-    ) ||
-    // Object<T> only support passing argument by-ref, not by-value
-     (is_ref && name.as_str() == "0x2::object::Object")
+            | "0x2::object::Object"
+    )
 }
 
 // ----------------------------------------------------------------------------------
@@ -835,8 +830,9 @@ impl<'a> ExtendedChecker<'a> {
                                                             error_msg.as_str(),
                                                         );
                                                     }
-                                                    gas_free_function_info.gas_validate =
-                                                        full_function_name.clone();
+                                                    gas_free_function_info
+                                                        .gas_validate
+                                                        .clone_from(&full_function_name)
                                                 }
 
                                                 if attribute_key == GAS_FREE_CHARGE_POST {
@@ -899,12 +895,14 @@ impl<'a> ExtendedChecker<'a> {
                                                 .or_default();
 
                                             if attribute_key == GAS_FREE_VALIDATE {
-                                                gas_free_function_info.gas_validate =
-                                                    full_function_name.clone();
+                                                gas_free_function_info
+                                                    .gas_validate
+                                                    .clone_from(&full_function_name)
                                             }
                                             if attribute_key == GAS_FREE_CHARGE_POST {
-                                                gas_free_function_info.gas_charge_post =
-                                                    full_function_name.clone();
+                                                gas_free_function_info
+                                                    .gas_charge_post
+                                                    .clone_from(&full_function_name)
                                             }
                                         }
                                     }
@@ -983,14 +981,14 @@ impl<'a> ExtendedChecker<'a> {
         }
 
         if !available_data_structs.is_empty() {
-            log::debug!(
+            log::trace!(
                 "\n\ncheck_data_struct() module {:?} data structs start...",
                 module_env.get_full_name_str()
             );
             for (k, v) in available_data_structs.iter() {
-                log::debug!("{:?} -> {:?}", k, v);
+                log::trace!("{:?} -> {:?}", k, v);
             }
-            log::debug!(
+            log::trace!(
                 "\n\ncheck_data_struct() module {:?} data structs end...",
                 module_env.get_full_name_str()
             );
@@ -1087,9 +1085,9 @@ fn check_data_struct_fields_type(
                 .to_string();
             let full_struct_name = format!("{}::{}", module.get_full_name_str(), struct_name);
 
-            if is_allowed_data_struct_type(&full_struct_name) {
-                return true;
-            }
+            //if is_allowed_data_struct_type(&full_struct_name) {
+            //    return true;
+            //}
 
             let struct_module = module_env.env.get_module(*module_id);
             let struct_env = struct_module.get_struct(*struct_id);
@@ -1322,14 +1320,14 @@ fn check_data_struct_func(extended_checker: &mut ExtendedChecker, module_env: &M
         .collect();
 
     if !data_struct_func_map.is_empty() {
-        log::debug!(
+        log::trace!(
             "\n\ncheck_data_struct_func() module {:?} data structs func start...",
             module_env.get_full_name_str()
         );
         for (k, v) in data_struct_func_map.iter() {
-            log::debug!("{:?} -> {:?}", k, v);
+            log::trace!("{:?} -> {:?}", k, v);
         }
-        log::debug!(
+        log::trace!(
             "\n\ncheck_data_struct_func() module {:?} data structs func end...",
             module_env.get_full_name_str()
         );
@@ -1377,7 +1375,7 @@ fn check_data_struct_func(extended_checker: &mut ExtendedChecker, module_env: &M
 
                 if let Some(data_struct_func_indicies) = data_struct_func_types {
                     let caller_fun_name = fun.get_full_name_str();
-                    log::debug!(
+                    log::trace!(
                         "function {:?}::{:?} call data_struct func {:?} with types {:?}",
                         module_env.self_address(),
                         caller_fun_name,
@@ -1433,9 +1431,9 @@ fn check_func_data_struct(
             );
 
             // #[data_struct(T)] supports not only structs, but also string and ObjectID.
-            if is_allowed_data_struct_type(&full_struct_name) {
-                return (true, "".to_string());
-            }
+            //if is_allowed_data_struct_type(&full_struct_name) {
+            //    return (true, "".to_string());
+            //}
 
             let data_struct_opt = unsafe {
                 let data = GLOBAL_DATA_STRUCT.read().unwrap();

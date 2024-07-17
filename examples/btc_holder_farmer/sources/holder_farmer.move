@@ -18,7 +18,6 @@ module btc_holder_farmer::hold_farmer {
     use moveos_std::timestamp;
     use moveos_std::account;
 
-
     const DEPLOYER: address = @btc_holder_farmer;
 
     const ErrorWrongDeployer: u64 = 1;
@@ -34,8 +33,6 @@ module btc_holder_farmer::hold_farmer {
     const ErrorAlreadyStaked: u64 = 11;
     const ErrorNotStaked: u64 = 12;
     const ErrorAssetExist: u64 = 13;
-
-
 
     spec module {
         pragma verify = false;
@@ -513,12 +510,14 @@ module btc_holder_farmer::hold_farmer {
         account::exists_resource<UserStake>(account)
     }
 
-    // public fun check_asset_is_staked(asset_id: ObjectID): bool {
-    //     let farming_asset = account::borrow_resource<FarmingAsset>(DEPLOYER);
-    //     // let account = table::borrow(&farming_asset.stake_table, asset_id);
-    //     // let user_stake = account::borrow_resource<UserStake>(*account);
-    //     table::contains(&farming_asset.stake_table, asset_id)
-    // }
+    public fun check_asset_is_staked(asset_id: ObjectID): (bool, u128) {
+        let farming_asset = account::borrow_resource<FarmingAsset>(DEPLOYER);
+        if (table::contains(&farming_asset.stake_table, asset_id)) {
+            let token_amount = query_gov_token_amount(asset_id);
+            return (true, token_amount)
+        };
+        return (false, 0)
+    }
     //
     // public entry fun remove_expired_stake(asset_id: ObjectID) {
     //     assert!(check_asset_is_staked(asset_id), ErrorNotStaked);
