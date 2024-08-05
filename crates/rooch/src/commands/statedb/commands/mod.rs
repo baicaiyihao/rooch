@@ -10,10 +10,11 @@ use std::time::Instant;
 
 use bitcoin::hashes::Hash;
 use bitcoin::OutPoint;
-use move_core_types::account_address::AccountAddress;
 use xorf::{BinaryFuse8, Filter};
 use xxhash_rust::xxh3::xxh3_64;
 
+use bitcoin_move::natives::ord::inscription_id::InscriptionId;
+use metrics::RegistryService;
 use moveos_store::MoveOSStore;
 use moveos_types::move_std::option::MoveOption;
 use moveos_types::move_std::string::MoveString;
@@ -22,11 +23,9 @@ use moveos_types::moveos_std::simple_multimap::{Element, SimpleMultiMap};
 use rooch_common::fs::file_cache::FileCacheManager;
 use rooch_config::RoochOpt;
 use rooch_db::RoochDB;
-use rooch_types::bitcoin::ord::{derive_inscription_id, InscriptionID};
-use rooch_types::into_address::IntoAddress;
 use rooch_types::rooch_network::RoochChainID;
 
-use crate::commands::statedb::commands::inscription::InscriptionSource;
+use crate::commands::statedb::commands::inscription::{derive_inscription_ids, InscriptionSource};
 
 pub mod export;
 pub mod genesis;
@@ -50,7 +49,8 @@ fn init_job(
     let start_time = Instant::now();
 
     let opt = RoochOpt::new_with_default(base_data_dir.clone(), chain_id.clone(), None).unwrap();
-    let rooch_db = RoochDB::init(opt.store_config()).unwrap();
+    let registry_service = RegistryService::default();
+    let rooch_db = RoochDB::init(opt.store_config(), &registry_service.default_registry()).unwrap();
     let root = rooch_db
         .latest_root()
         .unwrap()
@@ -69,7 +69,7 @@ fn convert_option_string_to_move_type(opt: Option<String>) -> MoveOption<MoveStr
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct OutpointInscriptions {
     outpoint: OutPoint,
-    inscriptions: Vec<ObjectID>,
+    inscriptions: Vec<InscriptionId>,
 }
 
 impl OutpointInscriptions {
@@ -108,8 +108,8 @@ impl FromStr for OutpointInscriptions {
         let outpoint = OutPoint::from_str(parts[0])?;
         let inscriptions = parts[1]
             .split(',')
-            .map(ObjectID::from_str)
-            .collect::<Result<Vec<ObjectID>, _>>()?;
+            .map(InscriptionId::from_str)
+            .collect::<Result<Vec<InscriptionId>, _>>()?;
         Ok(OutpointInscriptions {
             outpoint,
             inscriptions,
@@ -117,22 +117,26 @@ impl FromStr for OutpointInscriptions {
     }
 }
 
-fn derive_utxo_seal(inscriptions: Option<Vec<ObjectID>>) -> SimpleMultiMap<MoveString, ObjectID> {
-    if let Some(obj_ids) = inscriptions {
-        SimpleMultiMap {
-            data: vec![Element {
-                key: MoveString::from_str(UTXO_SEAL_INSCRIPTION_PROTOCOL).unwrap(),
-                value: obj_ids,
-            }],
-        }
-    } else {
-        SimpleMultiMap::create()
+fn derive_utxo_inscription_seal(
+    inscriptions: Option<Vec<InscriptionId>>,
+) -> SimpleMultiMap<MoveString, ObjectID> {
+    let obj_ids = derive_inscription_ids(inscriptions);
+    if obj_ids.is_empty() {
+        return SimpleMultiMap::create();
+    }
+    SimpleMultiMap {
+        data: vec![Element {
+            key: MoveString::from_str(UTXO_SEAL_INSCRIPTION_PROTOCOL).unwrap(),
+            value: obj_ids,
+        }],
     }
 }
 
 pub(crate) struct OutpointInscriptionsMap {
     items: Vec<OutpointInscriptions>,
     key_filter: Option<BinaryFuse8>,
+    min: OutPoint,
+    max: OutPoint,
 }
 
 fn unbound_outpoint() -> OutPoint {
@@ -142,14 +146,22 @@ fn unbound_outpoint() -> OutPoint {
     }
 }
 
+fn max_outpoint() -> OutPoint {
+    OutPoint {
+        txid: Hash::from_slice(&[0xff; 32]).unwrap(),
+        vout: u32::MAX,
+    }
+}
+
 impl OutpointInscriptionsMap {
-    fn index(src: PathBuf) -> (Self, usize, usize) {
+    fn index(src: PathBuf) -> (Self, usize, usize, usize) {
         let buf_size = 8 * 1024 * 1024; // inscription maybe large, using larger buffer than usual
         let mut reader = BufReader::with_capacity(buf_size, File::open(src.clone()).unwrap());
         let mut is_title_line = true;
 
         // collect all outpoint:inscription pairs except unbounded
         let mut has_outpoint_count: usize = 0;
+        let mut unbound_count: usize = 0;
         let mut items = Vec::with_capacity(80 * 1024 * 1024);
         for line in reader.by_ref().lines() {
             let line = line.unwrap();
@@ -160,16 +172,14 @@ impl OutpointInscriptionsMap {
                 }
             }
             let src: InscriptionSource = InscriptionSource::from_str(&line);
-            let txid: AccountAddress = src.id.txid.into_address();
-            let inscription_id = InscriptionID::new(txid, src.id.index);
-            let obj_id = derive_inscription_id(&inscription_id);
             let satpoint_output = OutPoint::from_str(src.satpoint_outpoint.as_str()).unwrap();
             if satpoint_output == unbound_outpoint() {
+                unbound_count += 1;
                 continue; // skip unbounded outpoint
             }
             items.push(OutpointInscriptions {
                 outpoint: satpoint_output,
-                inscriptions: vec![obj_id.clone()],
+                inscriptions: vec![src.id],
             });
             has_outpoint_count += 1;
         }
@@ -180,15 +190,26 @@ impl OutpointInscriptionsMap {
             has_outpoint_count, mapped_inscription_count,
             "Inscription count mismatch after mapping"
         );
-        (map, mapped_outpoint_count, mapped_inscription_count)
+        (
+            map,
+            mapped_outpoint_count,
+            mapped_inscription_count,
+            unbound_count,
+        )
     }
 
-    fn index_and_dump(src: PathBuf, dump_path: Option<PathBuf>) -> (Self, usize, usize) {
-        let (map, mapped_outpoint_count, mapped_inscription_count) = Self::index(src.clone());
+    fn index_and_dump(src: PathBuf, dump_path: Option<PathBuf>) -> (Self, usize, usize, usize) {
+        let (map, mapped_outpoint_count, mapped_inscription_count, unbound_count) =
+            Self::index(src.clone());
         if let Some(dump_path) = dump_path {
             map.dump(dump_path);
         }
-        (map, mapped_outpoint_count, mapped_inscription_count)
+        (
+            map,
+            mapped_outpoint_count,
+            mapped_inscription_count,
+            unbound_count,
+        )
     }
 
     fn new_with_unsorted(items: Vec<OutpointInscriptions>) -> Self {
@@ -199,12 +220,18 @@ impl OutpointInscriptionsMap {
         let mut map = OutpointInscriptionsMap {
             items,
             key_filter: None,
+            min: unbound_outpoint(),
+            max: max_outpoint(),
         };
         if !sorted {
             map.sort_and_merge();
         }
         map.add_outpoint_filter();
         map
+    }
+
+    fn is_in_range(&self, outpoint: &OutPoint) -> bool {
+        outpoint >= &self.min && outpoint <= &self.max
     }
 
     fn sort_and_merge(&mut self) -> usize {
@@ -218,7 +245,7 @@ impl OutpointInscriptionsMap {
         let mut write_index = 0;
         for read_index in 1..items.len() {
             if items[write_index].outpoint == items[read_index].outpoint {
-                let drained_inscriptions: Vec<ObjectID> =
+                let drained_inscriptions: Vec<InscriptionId> =
                     items[read_index].inscriptions.drain(..).collect();
                 items[write_index].inscriptions.extend(drained_inscriptions);
             } else {
@@ -232,6 +259,14 @@ impl OutpointInscriptionsMap {
         let new_len = write_index + 1;
         items.truncate(new_len);
         items.shrink_to_fit();
+        self.min = items
+            .first()
+            .map(|item| item.outpoint)
+            .unwrap_or(unbound_outpoint());
+        self.max = items
+            .last()
+            .map(|item| item.outpoint)
+            .unwrap_or(max_outpoint());
         new_len
     }
 
@@ -241,15 +276,19 @@ impl OutpointInscriptionsMap {
         self.key_filter = Some(filter);
     }
 
-    // check if the outpoint is in the filter, false positive is allowed
+    // check if outpoint is in the filter, false positive is allowed
     fn contains(&self, outpoint: &OutPoint) -> bool {
+        if !self.is_in_range(outpoint) {
+            return false;
+        }
+
         match &self.key_filter {
             Some(filter) => filter.contains(&xxh3_outpoint(outpoint)),
             None => true,
         }
     }
 
-    fn search(&self, outpoint: &OutPoint) -> Option<Vec<ObjectID>> {
+    fn search(&self, outpoint: &OutPoint) -> Option<Vec<InscriptionId>> {
         if !self.contains(outpoint) {
             return None;
         }
@@ -306,6 +345,7 @@ mod tests {
 
     use bitcoin::Txid;
     use rand::Rng;
+    use tempfile::tempdir;
 
     use super::*;
 
@@ -330,6 +370,14 @@ mod tests {
         OutPoint { txid, vout }
     }
 
+    fn random_inscription_id() -> InscriptionId {
+        let mut rng = rand::thread_rng();
+        let txid: Txid = Txid::from_slice(&rng.gen::<[u8; 32]>()).unwrap();
+        let index: u32 = rng.gen();
+
+        InscriptionId { txid, index }
+    }
+
     // all outpoints are unique
     fn random_outpoints(n: usize) -> Vec<OutPoint> {
         let mut outpoints = HashSet::new();
@@ -340,10 +388,10 @@ mod tests {
     }
 
     // all inscriptions are unique
-    fn random_inscriptions(n: usize) -> Vec<ObjectID> {
+    fn random_inscriptions(n: usize) -> Vec<InscriptionId> {
         let mut inscriptions = HashSet::new();
         while inscriptions.len() < n {
-            inscriptions.insert(ObjectID::random());
+            inscriptions.insert(random_inscription_id());
         }
         inscriptions.into_iter().collect()
     }
@@ -418,6 +466,8 @@ mod tests {
         let mut map = OutpointInscriptionsMap {
             items,
             key_filter: None,
+            min: unbound_outpoint(),
+            max: max_outpoint(),
         };
         assert!(!map.is_sorted_and_merged());
 
@@ -435,7 +485,7 @@ mod tests {
     fn contains_false_positive() {
         let sample_size = 1024 * 1024;
         let items = random_items(sample_size, 0);
-        // won't search later, so it's ok to not sort and merge
+        // won't search later, so it's OK to not sort and merge
         let mut map = OutpointInscriptionsMap::new(items.clone(), true);
         map.add_outpoint_filter();
         // ensure no false negative
@@ -476,12 +526,12 @@ mod tests {
         for item in items.iter() {
             let outpoint_inscriptions = OutpointInscriptions {
                 outpoint: item.outpoint,
-                inscriptions: vec![item.inscriptions[0].clone()],
+                inscriptions: vec![item.inscriptions[0]],
             };
             unmerged_items.push(outpoint_inscriptions);
             let outpoint_inscriptions = OutpointInscriptions {
                 outpoint: item.outpoint,
-                inscriptions: vec![item.inscriptions[1].clone()],
+                inscriptions: vec![item.inscriptions[1]],
             };
             unmerged_items.push(outpoint_inscriptions);
         }
@@ -498,8 +548,10 @@ mod tests {
         let items = random_items_default(10);
         let map = OutpointInscriptionsMap::new_with_unsorted(items.clone());
         let (mapped_outpoint_count, mapped_inscription_count) = map.stats();
-
-        let dump_path = PathBuf::from("outpoint_inscriptions_map_index_and_dump_test");
+        let tempdir = tempdir().unwrap();
+        let dump_path = tempdir
+            .path()
+            .join("outpoint_inscriptions_map_index_and_dump");
         map.dump(dump_path.clone());
         let map_from_load = OutpointInscriptionsMap::load(dump_path.clone());
         assert!(map_from_load.is_sorted_and_merged());

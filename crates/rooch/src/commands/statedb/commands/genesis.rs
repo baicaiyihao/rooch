@@ -49,7 +49,7 @@ pub struct GenesisCommand {
     pub ord_source: PathBuf,
     #[clap(
         long,
-        default_value = "1048576",
+        default_value = "524288",
         help = "batch size submited to state db. Set it smaller if memory is limited."
     )]
     pub utxo_batch_size: Option<usize>,
@@ -64,6 +64,11 @@ pub struct GenesisCommand {
         help = "outpoint(original):inscriptions(object_id) map dump path, for debug"
     )]
     pub outpoint_inscriptions_map_dump_path: Option<PathBuf>,
+    #[clap(
+        long,
+        help = "only map outpoint to inscriptions, do not import inscriptions"
+    )]
+    pub map_outpoint_inscriptions_only: bool,
 
     #[clap(long = "data-dir", short = 'd')]
     /// Path to data dir, this dir is base dir, the final data_dir is base_dir/chain_network_name
@@ -91,17 +96,21 @@ impl GenesisCommand {
         let pre_root_state_root = root.state_root();
 
         log::info!("indexing and dumping outpoint_inscriptions_map...");
-        let (outpoint_inscriptions_map, mapped_outpoint, mapped_inscription) =
+        let (outpoint_inscriptions_map, mapped_outpoint, mapped_inscription, unbound_count) =
             OutpointInscriptionsMap::index_and_dump(
                 self.ord_source.clone(),
                 self.outpoint_inscriptions_map_dump_path.clone(),
             );
         println!(
-            "{} outpoints : {} inscriptions mapped in: {:?}",
+            "{} outpoints : {} inscriptions mapped in: {:?} ({} unbound inscriptions ignored)",
             mapped_outpoint,
             mapped_inscription,
             start_time.elapsed(),
+            unbound_count
         );
+        if self.map_outpoint_inscriptions_only {
+            return Ok(());
+        }
 
         // import inscriptions and utxo parallel
         let outpoint_inscriptions_map = Arc::new(outpoint_inscriptions_map);
@@ -123,7 +132,7 @@ impl GenesisCommand {
         let utxo_input_path = self.utxo_source.clone();
         let utxo_batch_size = self.utxo_batch_size.unwrap();
         let (utxo_tx, utxo_rx) = mpsc::sync_channel(4);
-        let (addr_tx, addr_rx) = mpsc::sync_channel(2);
+        let (addr_tx, addr_rx) = mpsc::sync_channel(4);
         let produce_utxo_updates_thread = thread::spawn(move || {
             produce_utxo_updates(
                 utxo_tx,
@@ -251,21 +260,21 @@ fn apply_inscription_updates(
         let mut nodes: BTreeMap<H256, Vec<u8>> = BTreeMap::new();
 
         let cnt = batch.update_set.len();
-        let mut ord_tree_change_set =
+        let mut tree_change_set =
             apply_fields(moveos_store, inscription_store_state_root, batch.update_set).unwrap();
-        nodes.append(&mut ord_tree_change_set.nodes);
+        nodes.append(&mut tree_change_set.nodes);
 
-        inscription_store_state_root = ord_tree_change_set.state_root;
+        inscription_store_state_root = tree_change_set.state_root;
         cursed_inscription_count += batch.cursed_inscription_count;
         blessed_inscription_count += batch.blessed_inscription_count;
 
-        apply_nodes(moveos_store, nodes).expect("failed to apply ord nodes");
+        apply_nodes(moveos_store, nodes).expect("failed to apply inscription nodes");
 
         inscritpion_store_filed_count += cnt as u32;
 
         println!(
             "{} inscription applied ({} cursed, {} blessed). this batch: value size: {}, cost: {:?}",
-            inscritpion_store_filed_count / 2, // both ord and ord_id as field
+            inscritpion_store_filed_count / 2, // both inscription and inscription_id as field
             cursed_inscription_count,
             blessed_inscription_count,
             humanize::human_readable_bytes(batch.updates_value_bytes),
