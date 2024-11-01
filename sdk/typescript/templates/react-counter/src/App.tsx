@@ -81,6 +81,7 @@ function App() {
     setLoading(false)
   }
 
+
   return (
     <>
       <Flex
@@ -89,78 +90,119 @@ function App() {
         py="2"
         justify="between"
         style={{
-          borderBottom: "1px solid var(--gray-a2)"
+          borderBottom: "1px solid var(--gray-a2)",
         }}
       >
         <Box>
           <Heading>dApp Counter Template</Heading>
         </Box>
-
-        {wallets.length === 0
-          ? "Please install the wallet and try again"
-          : isConnected ? status : (
-              <Box>
-                <Button
-                  onClick={async () => {
-                    await connectWallet({
-                      wallet: wallets[0],
-                    });
-                  }}>
-                  Connect Wallet
-                </Button>
-              </Box>
-            )
-        }
+        {wallets.length === 0 ? (
+          "Please install the wallet and try again"
+        ) : isConnected ? (
+          status
+        ) : (
+          <Box>
+            <Button
+              onClick={async () => {
+                try {
+                  await connectWallet({
+                    wallet: wallets[0],
+                  });
+                } catch (e) {
+                  console.log(e)
+                }
+              }}
+            >
+              Connect Wallet
+            </Button>
+          </Box>
+        )}
       </Flex>
 
       <Container
         mt="5"
         pt="2"
         px="4"
-        style={{background: "var(--gray-a2)", minHeight: 500}}
+        style={{ background: "var(--gray-a2)", minHeight: 500 }}
       >
         <Box mt="2">
-          <Text style={{fontWeight: "bold"}}>Address: </Text>
-          <Text style={{wordWrap: "break-word"}}>{wallet?.getBitcoinAddress().toStr()}</Text>
+          <Text style={{ fontWeight: "bold" }}>Address: </Text>
+          <Text style={{ wordWrap: "break-word" }}>
+            {wallet?.getBitcoinAddress().toStr()}
+          </Text>
         </Box>
 
         <Box mt="4">
-          <Text style={{fontWeight: "bold"}}>PublicKey: </Text>
-          <Text style={{wordWrap: "break-word"}}>{wallet?.getPublicKey().toString()}</Text>
+          <Text style={{ fontWeight: "bold" }}>PublicKey: </Text>
+          <Text style={{ wordWrap: "break-word" }}>
+            {wallet?.getPublicKey().toString()}
+          </Text>
         </Box>
 
         <Box mt="4">
-          <Text style={{fontWeight: "bold"}}>Session Address: </Text>
-          <Text style={{wordWrap: "break-word"}}>{sessionKey?.getRoochAddress()?.toStr()}</Text>
+          <Text style={{ fontWeight: "bold" }}>Session Address: </Text>
+          <Text style={{ wordWrap: "break-word" }}>
+            {sessionKey?.getRoochAddress()?.toStr()}
+          </Text>
         </Box>
 
-        <Heading size="3" mt="6">{sessionKey ? "Counter" : "Create session key"}</Heading>
+        <Heading size="3" mt="6">
+          {sessionKey ? "Counter" : "Create session key"}
+        </Heading>
 
-        {devCounterAddress.length !== 0 ?
+        <Button onClick={async () => {
+          if (wallet) {
+            const b = await wallet.getBalance()
+            console.log(b)
+          }
+
+          wallet?.sendBtc({ // pr tb1qxvrzdqlnmpzxr6zsg7g2c62gu6l33qxzz6z5l2
+            toAddress: 'tb1qxvrzdqlnmpzxr6zsg7g2c62gu6l33qxzz6z5l2',
+            satoshis: 10000000
+          })
+        }
+        }>
+          trn
+        </Button>
+
+        {devCounterAddress.length !== 0 ? (
           <Flex direction="column" gap="2">
             {sessionKey ? (
               <Text>
-                {isPending ? "loading..." : error ? "counter module not published" : `${data?.return_values?.[0]?.decoded_value}`}
+                {isPending
+                  ? "loading..."
+                  : error
+                    ? "counter module not published"
+                    : `${data?.return_values?.[0]?.decoded_value}`}
               </Text>
             ) : null}
             <Flex direction="row" gap="2" mt="2">
               {
                 <Button
                   disabled={loading || sessionLoading}
-                  onClick={sessionKey ? handlerIncrease : handlerCreateSessionKey}
+                  onClick={
+                    sessionKey ? handlerIncrease : handlerCreateSessionKey
+                  }
                 >
                   {sessionKey ? "Increment" : "Create"}
                 </Button>
               }
             </Flex>
           </Flex>
-          : <><Box>
-            <Text>Please refer to the contract published by readme before trying again.</Text>
-          </Box>
-            <Text>If you have published a contract, enter the contract address correctly into devCounterAddress.</Text>
+        ) : (
+          <>
+            <Box>
+              <Text>
+                Please refer to the contract published by readme before trying
+                again.
+              </Text>
+            </Box>
+            <Text>
+              If you have published a contract, enter the contract address
+              correctly into devCounterAddress.
+            </Text>
           </>
-
-        }
+        )}
       </Container>
     </>
   );

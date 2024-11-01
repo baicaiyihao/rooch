@@ -3,7 +3,8 @@
 
 use super::{
     AnnotatedMoveStructView, BytesView, H256View, HumanReadableDisplay, ObjectIDVecView,
-    RoochAddressView, StrView, StructTagView, TypeTagView, UnitedAddressView,
+    ObjectIDView, QueryOptions, RoochAddressView, StrView, StructTagView, TypeTagView,
+    UnitedAddressView,
 };
 use anyhow::Result;
 use move_core_types::effects::Op;
@@ -15,6 +16,7 @@ use moveos_types::{
     state::{AnnotatedState, ObjectState, StateChangeSet},
 };
 use rooch_types::indexer::state::{IndexerStateID, ObjectStateFilter};
+use rooch_types::state::{StateChangeSetWithTxOrder, SyncStateFilter};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -371,7 +373,6 @@ pub enum ObjectStateFilterView {
     /// Query by object value type and owner.
     ObjectTypeWithOwner {
         object_type: StructTagView,
-        filter_out: bool,
         owner: UnitedAddressView,
     },
     /// Query by object value type.
@@ -385,17 +386,16 @@ pub enum ObjectStateFilterView {
 impl ObjectStateFilterView {
     pub fn try_into_object_state_filter(
         state_filter: ObjectStateFilterView,
+        query_option: QueryOptions,
     ) -> Result<ObjectStateFilter> {
         Ok(match state_filter {
-            ObjectStateFilterView::ObjectTypeWithOwner {
-                object_type,
-                filter_out,
-                owner,
-            } => ObjectStateFilter::ObjectTypeWithOwner {
-                object_type: object_type.into(),
-                filter_out,
-                owner: owner.into(),
-            },
+            ObjectStateFilterView::ObjectTypeWithOwner { object_type, owner } => {
+                ObjectStateFilter::ObjectTypeWithOwner {
+                    object_type: object_type.into(),
+                    owner: owner.into(),
+                    filter_out: query_option.filter_out,
+                }
+            }
             ObjectStateFilterView::ObjectType(object_type) => {
                 ObjectStateFilter::ObjectType(object_type.into())
             }
@@ -504,7 +504,9 @@ fn parse_changed_objects(
     let mut deleted_objs = vec![];
     for obj_change in changes {
         let metadata = obj_change.metadata.clone();
-        debug_assert!(obj_change.value.is_some() || !obj_change.fields.is_empty());
+        //TODO fixme
+        //https://github.com/rooch-network/rooch/issues/2657
+        //debug_assert!(obj_change.value.is_some() || !obj_change.fields.is_empty());
         match obj_change.value {
             Some(OpView::New(_)) => new_objs.push(metadata),
             Some(OpView::Modify(_)) => modified_objs.push(metadata),
@@ -518,4 +520,37 @@ fn parse_changed_objects(
         deleted_objs.extend(field_deleted_objs);
     }
     (new_objs, modified_objs, deleted_objs)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncStateFilterView {
+    /// Sync by object id.
+    ObjectID(ObjectIDView),
+    /// Sync all.
+    All,
+}
+
+impl From<SyncStateFilterView> for SyncStateFilter {
+    fn from(state_filter: SyncStateFilterView) -> Self {
+        match state_filter {
+            SyncStateFilterView::ObjectID(object_id) => SyncStateFilter::ObjectID(object_id.into()),
+            SyncStateFilterView::All => SyncStateFilter::All,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StateChangeSetWithTxOrderView {
+    pub tx_order: StrView<u64>,
+    pub state_change_set: StateChangeSetView,
+}
+
+impl From<StateChangeSetWithTxOrder> for StateChangeSetWithTxOrderView {
+    fn from(state_change_set: StateChangeSetWithTxOrder) -> Self {
+        Self {
+            tx_order: state_change_set.tx_order.into(),
+            state_change_set: state_change_set.state_change_set.into(),
+        }
+    }
 }

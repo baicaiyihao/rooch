@@ -81,9 +81,9 @@ impl FromOnChainGasSchedule for MoveOSStdlibGasParameters {
             object: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             json: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             cbor: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
-            wasm: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             tx_context: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             base58: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
+            base64: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             bech32: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             hash: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
             bls12381: FromOnChainGasSchedule::from_on_chain_gas_schedule(gas_schedule).unwrap(),
@@ -108,9 +108,9 @@ impl ToOnChainGasSchedule for MoveOSStdlibGasParameters {
         entires.extend(self.object.to_on_chain_gas_schedule());
         entires.extend(self.json.to_on_chain_gas_schedule());
         entires.extend(self.cbor.to_on_chain_gas_schedule());
-        entires.extend(self.wasm.to_on_chain_gas_schedule());
         entires.extend(self.tx_context.to_on_chain_gas_schedule());
         entires.extend(self.base58.to_on_chain_gas_schedule());
+        entires.extend(self.base64.to_on_chain_gas_schedule());
         entires.extend(self.bech32.to_on_chain_gas_schedule());
         entires.extend(self.hash.to_on_chain_gas_schedule());
         entires.extend(self.bls12381.to_on_chain_gas_schedule());
@@ -136,9 +136,9 @@ impl InitialGasSchedule for MoveOSStdlibGasParameters {
             object: InitialGasSchedule::initial(),
             json: InitialGasSchedule::initial(),
             cbor: InitialGasSchedule::initial(),
-            wasm: InitialGasSchedule::initial(),
             tx_context: InitialGasSchedule::initial(),
             base58: InitialGasSchedule::initial(),
+            base64: InitialGasSchedule::initial(),
             bech32: InitialGasSchedule::initial(),
             hash: InitialGasSchedule::initial(),
             bls12381: InitialGasSchedule::initial(),

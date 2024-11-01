@@ -4,14 +4,16 @@
 use crate::into_address::FromAddress;
 use crate::{address::BitcoinAddress, addresses::BITCOIN_MOVE_ADDRESS, into_address::IntoAddress};
 use anyhow::Result;
+use bitcoin::Txid;
 use bitcoin::{hashes::Hash, BlockHash};
 use bitcoincore_rpc::bitcoincore_rpc_json::GetBlockHeaderResult;
 use move_core_types::{account_address::AccountAddress, ident_str, identifier::IdentStr};
 use moveos_types::h256::sha2_256_of;
 use moveos_types::state::{MoveState, MoveStructState, MoveStructType};
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::fmt::{self, Debug};
 use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 pub const MODULE_NAME: &IdentStr = ident_str!("types");
 
@@ -167,7 +169,7 @@ pub struct Transaction {
 impl From<bitcoin::Transaction> for Transaction {
     fn from(tx: bitcoin::Transaction) -> Self {
         Self {
-            id: tx.txid().into_address(),
+            id: tx.compute_txid().into_address(),
             version: tx.version.0 as u32,
             lock_time: tx.lock_time.to_consensus_u32(),
             input: tx.input.into_iter().map(|tx_in| tx_in.into()).collect(),
@@ -274,7 +276,7 @@ impl MoveStructState for Witness {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Clone, Ord, PartialOrd, PartialEq, Eq, Hash)]
 pub struct OutPoint {
     /// The referenced transaction's txid.
     /// Use address to represent sha256d hash
@@ -299,12 +301,25 @@ impl OutPoint {
     pub fn is_null(&self) -> bool {
         *self == OutPoint::null()
     }
+
+    pub fn txid(&self) -> Txid {
+        Txid::from_address(self.txid)
+    }
 }
 
 impl From<bitcoin::OutPoint> for OutPoint {
     fn from(out_point: bitcoin::OutPoint) -> Self {
         Self {
             txid: out_point.txid.into_address(),
+            vout: out_point.vout,
+        }
+    }
+}
+
+impl From<OutPoint> for bitcoin::OutPoint {
+    fn from(out_point: OutPoint) -> Self {
+        Self {
+            txid: Txid::from_address(out_point.txid),
             vout: out_point.vout,
         }
     }
@@ -327,7 +342,59 @@ impl MoveStructState for OutPoint {
 
 impl Display for OutPoint {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}:{}", self.txid, self.vout)
+        //We use bitcoin txid hex to display
+        let txid = Txid::from_address(self.txid);
+        write!(f, "{}:{}", txid, self.vout)
+    }
+}
+
+impl FromStr for OutPoint {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid OutPoint format"));
+        }
+        let txid = Txid::from_str(parts[0])?;
+        let vout = parts[1].parse()?;
+        Ok(OutPoint::new(txid.into_address(), vout))
+    }
+}
+
+impl Serialize for OutPoint {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.collect_str(&self)
+        } else {
+            #[derive(Serialize)]
+            struct Value {
+                txid: AccountAddress,
+                vout: u32,
+            }
+            Value {
+                txid: self.txid,
+                vout: self.vout,
+            }
+            .serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutPoint {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
+            s.parse().map_err(serde::de::Error::custom)
+        } else {
+            #[derive(Deserialize)]
+            struct Value {
+                txid: AccountAddress,
+                vout: u32,
+            }
+            let value = Value::deserialize(deserializer)?;
+            Ok(OutPoint::new(value.txid, value.vout))
+        }
     }
 }
 
@@ -393,10 +460,17 @@ impl MoveStructState for TxOut {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BlockHeightHash {
     pub block_height: u64,
     pub block_hash: AccountAddress,
+}
+
+impl Debug for BlockHeightHash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let block_hash = BlockHash::from_address(self.block_hash);
+        write!(f, "BlockHeightHash({},{})", self.block_height, block_hash)
+    }
 }
 
 impl MoveStructType for BlockHeightHash {

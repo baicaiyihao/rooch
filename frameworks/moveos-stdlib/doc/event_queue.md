@@ -7,6 +7,7 @@
 
 -  [Resource `EventQueue`](#0x2_event_queue_EventQueue)
 -  [Struct `OnChainEvent`](#0x2_event_queue_OnChainEvent)
+-  [Struct `OffChainEvent`](#0x2_event_queue_OffChainEvent)
 -  [Resource `Subscriber`](#0x2_event_queue_Subscriber)
 -  [Constants](#@Constants_0)
 -  [Function `emit`](#0x2_event_queue_emit)
@@ -14,10 +15,13 @@
 -  [Function `subscribe`](#0x2_event_queue_subscribe)
 -  [Function `unsubscribe`](#0x2_event_queue_unsubscribe)
 -  [Function `remove_expired_events`](#0x2_event_queue_remove_expired_events)
+-  [Function `subscriber_info`](#0x2_event_queue_subscriber_info)
+-  [Function `exists_new_events`](#0x2_event_queue_exists_new_events)
 
 
 <pre><code><b>use</b> <a href="">0x1::option</a>;
 <b>use</b> <a href="">0x1::string</a>;
+<b>use</b> <a href="event.md#0x2_event">0x2::event</a>;
 <b>use</b> <a href="object.md#0x2_object">0x2::object</a>;
 <b>use</b> <a href="timestamp.md#0x2_timestamp">0x2::timestamp</a>;
 </code></pre>
@@ -42,6 +46,19 @@
 
 
 <pre><code><b>struct</b> <a href="event_queue.md#0x2_event_queue_OnChainEvent">OnChainEvent</a>&lt;E&gt; <b>has</b> drop, store
+</code></pre>
+
+
+
+<a name="0x2_event_queue_OffChainEvent"></a>
+
+## Struct `OffChainEvent`
+
+The off-chain event
+Every on-chain event also trigger an off-chain event
+
+
+<pre><code><b>struct</b> <a href="event_queue.md#0x2_event_queue_OffChainEvent">OffChainEvent</a>&lt;E&gt; <b>has</b> <b>copy</b>, drop, store
 </code></pre>
 
 
@@ -76,6 +93,15 @@
 
 
 <pre><code><b>const</b> <a href="event_queue.md#0x2_event_queue_ErrorEventNotFound">ErrorEventNotFound</a>: u64 = 3;
+</code></pre>
+
+
+
+<a name="0x2_event_queue_ErrorEventQueueNotFound"></a>
+
+
+
+<pre><code><b>const</b> <a href="event_queue.md#0x2_event_queue_ErrorEventQueueNotFound">ErrorEventQueueNotFound</a>: u64 = 5;
 </code></pre>
 
 
@@ -175,5 +201,27 @@ Remove the expired events from the event queue
 Anyone can call this function to remove the expired events
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="event_queue.md#0x2_event_queue_remove_expired_events">remove_expired_events</a>&lt;E: <b>copy</b>, drop, store&gt;(<a href="event_queue.md#0x2_event_queue">event_queue</a>: <a href="_String">string::String</a>)
+<pre><code><b>public</b> <b>fun</b> <a href="event_queue.md#0x2_event_queue_remove_expired_events">remove_expired_events</a>&lt;E: <b>copy</b>, drop, store&gt;(queue_name: <a href="_String">string::String</a>)
+</code></pre>
+
+
+
+<a name="0x2_event_queue_subscriber_info"></a>
+
+## Function `subscriber_info`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="event_queue.md#0x2_event_queue_subscriber_info">subscriber_info</a>&lt;E: <b>copy</b>, drop, store&gt;(subscriber_obj: &<a href="object.md#0x2_object_Object">object::Object</a>&lt;<a href="event_queue.md#0x2_event_queue_Subscriber">event_queue::Subscriber</a>&lt;E&gt;&gt;): (u64, u64, u64)
+</code></pre>
+
+
+
+<a name="0x2_event_queue_exists_new_events"></a>
+
+## Function `exists_new_events`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="event_queue.md#0x2_event_queue_exists_new_events">exists_new_events</a>&lt;E: <b>copy</b>, drop, store&gt;(subscriber_obj: &<a href="object.md#0x2_object_Object">object::Object</a>&lt;<a href="event_queue.md#0x2_event_queue_Subscriber">event_queue::Subscriber</a>&lt;E&gt;&gt;): bool
 </code></pre>

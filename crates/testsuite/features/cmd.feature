@@ -3,28 +3,29 @@ Feature: Rooch CLI integration tests
     @serial
     Scenario: rooch rpc test
       Given a server for rooch_rpc_test
-      Then cmd: "rpc request --method rooch_getStates --params '["/resource/0x3/0x3::account_coin_store::AutoAcceptCoins",{"decode":true}]' --json"
+      Then cmd: "rpc request --method rooch_getStates --params '["/resource/0x3/0x3::account_coin_store::AutoAcceptCoins", {"decode":true}]' --json"
       #The object_type contians blank space, so, we should quote it
       Then assert: "'{{$.rpc[-1][0].object_type}}' == '0x2::object::DynamicField<0x1::string::String, 0x3::account_coin_store::AutoAcceptCoins>'"
-      Then cmd: "rpc request --method rooch_getStates --params '["/object/0x3",{"decode":true}]' --json"
+      Then cmd: "rpc request --method rooch_getStates --params '["/object/0x3", {"decode":true}]' --json"
       Then assert: "{{$.rpc[-1][0].object_type}} == '0x2::account::Account'"
       Then cmd: "rpc request --method rooch_listStates --params '["/resource/0x3", null, null, {"decode":true}]' --json"
       Then assert: "'{{$.rpc[-1]}}' contains '0x3::account_coin_store::AutoAcceptCoins'"
-      Then cmd: "rpc request --method rooch_getStates --params '["/object/0x4e8d2c243339c6e02f8b7dd34436a1b1eb541b0fe4d938f845f4dbb9d9f218a2",{"decode":true}]' --json"
+            # named_object_id(0x2::timestamp::Timestamp) == 0x3a7dfe7a9a5cd608810b5ebd60c7adf7316667b17ad5ae703af301b74310bcca
+      Then cmd: "rpc request --method rooch_getStates --params '["/object/0x3a7dfe7a9a5cd608810b5ebd60c7adf7316667b17ad5ae703af301b74310bcca", {"decode":true}]' --json"
       Then assert: "{{$.rpc[-1][0].object_type}} == '0x2::timestamp::Timestamp'"
       Then assert: "{{$.rpc[-1][0].decoded_value.value.milliseconds}} == 0"
       Then cmd: "rpc request --method rooch_getStates --params '["/object/0x2::timestamp::Timestamp",{"decode":true}]' --json"
       Then assert: "{{$.rpc[-1][0].object_type}} == '0x2::timestamp::Timestamp'"
-      Then cmd: "rpc request --method rooch_getObjectStates --params '["0x4e8d2c243339c6e02f8b7dd34436a1b1eb541b0fe4d938f845f4dbb9d9f218a2", {"decode":false}]' --json"
-      Then cmd: "rpc request --method rooch_getObjectStates --params '["0x4e8d2c243339c6e02f8b7dd34436a1b1eb541b0fe4d938f845f4dbb9d9f218a2", {"decode":true}]' --json"
+      Then cmd: "rpc request --method rooch_getObjectStates --params '["0x3a7dfe7a9a5cd608810b5ebd60c7adf7316667b17ad5ae703af301b74310bcca", {"decode":false}]' --json"
+      Then cmd: "rpc request --method rooch_getObjectStates --params '["0x3a7dfe7a9a5cd608810b5ebd60c7adf7316667b17ad5ae703af301b74310bcca", {"decode":true}]' --json"
       Then assert: "{{$.rpc[-1][0].object_type}} == '0x2::timestamp::Timestamp'"
       Then assert: "{{$.rpc[-1][0].value}} == {{$.rpc[-2][0].value}}"
       # ModuleStore is a named object, so we can directly use the struct tag as ObjectID arguments.
-      # named_object_id(0x2::module_store::ModuleStore) == 0x2214495c6abca5dd5a2bf0f2a28a74541ff10c89818a1244af24c4874325ebdb
+      # named_object_id(0x2::module_store::ModuleStore) == 0x14481947570f6c2f50d190f9a13bf549ab2f0c9debc41296cd4d506002379659
       # 0x3 is the rooch_framwork package address, the package's field key is the package address.
       Then cmd: "rpc request --method rooch_getFieldStates --params '["0x2::module_store::ModuleStore", ["0x3"], {"decode": true, "showDisplay": true}]' --json"
       Then assert: "{{$.rpc[-1][0].object_type}} == '0x2::module_store::Package'"
-      Then cmd: "rpc request --method rooch_listFieldStates --params '["0x2214495c6abca5dd5a2bf0f2a28a74541ff10c89818a1244af24c4874325ebdb", null, "2", {"decode": false, "showDisplay": false}]' --json"
+      Then cmd: "rpc request --method rooch_listFieldStates --params '["0x14481947570f6c2f50d190f9a13bf549ab2f0c9debc41296cd4d506002379659", null, "2", {"decode": false, "showDisplay": false}]' --json"
       Then assert: "{{$.rpc[-1].has_next_page}} == true"
       Then cmd: "rpc request --method rooch_getModuleABI --params '["0x2", "display"]'"
       Then assert: "{{$.rpc[-1].name}} == 'display'"
@@ -36,6 +37,11 @@ Feature: Rooch CLI integration tests
 
       Then cmd: "account create"
       Then cmd: "account list --json"
+      # account sign and verify
+      Then cmd: "account sign -a {{$.account[-1].account0.address}} -m 'empty' --json"
+      Then cmd: "account verify -s {{$.account[-1]}} -m 'empty' --json"
+      Then assert: "{{$.account[-1]}} == true"
+      Then cmd: "account list --json"
       Then cmd: "account export"
       Then cmd: "account export -a {{$.account[-1].account0.address}} --json"
       # use bitcoin_address
@@ -44,15 +50,15 @@ Feature: Rooch CLI integration tests
       # use nostr_public_key
       Then cmd: "account nullify -a {{$.account[-2].account0.nostr_public_key}}"
 
-      Then cmd: "rpc request --method rooch_getBalance --params '["{{$.address_mapping.default}}", "0x3::gas_coin::GasCoin"]' --json"
-      Then assert: "'{{$.rpc[-1].coin_type}}' == '0x3::gas_coin::GasCoin'"
+      Then cmd: "rpc request --method rooch_getBalance --params '["{{$.address_mapping.default}}", "0x3::gas_coin::RGas"]' --json"
+      Then assert: "'{{$.rpc[-1].coin_type}}' == '0x3::gas_coin::RGas'"
       Then assert: "'{{$.rpc[-1].balance}}' == '0'"
 
       # Get gas
       Then cmd: "move run --function rooch_framework::gas_coin::faucet_entry --args u256:10000000000 --json"
       Then assert: "{{$.move[-1].execution_info.status.type}} == executed"
 
-      Then cmd: "rpc request --method rooch_getStates --params '["/object/0x4e8d2c243339c6e02f8b7dd34436a1b1eb541b0fe4d938f845f4dbb9d9f218a2",{"decode":true}]' --json"
+      Then cmd: "rpc request --method rooch_getStates --params '["/object/0x3a7dfe7a9a5cd608810b5ebd60c7adf7316667b17ad5ae703af301b74310bcca", {"decode":true}]' --json"
       Then assert: "{{$.rpc[-1][0].object_type}} == '0x2::timestamp::Timestamp'"
       # ensure the tx_timestamp update the global timestamp
       Then assert: "{{$.rpc[-1][0].decoded_value.value.milliseconds}} != 0"
@@ -67,11 +73,28 @@ Feature: Rooch CLI integration tests
       # transaction
       Then cmd: "transaction get-transactions-by-order --cursor 0 --limit 1 --descending-order false"
       Then cmd: "transaction get-transactions-by-hash --hashes {{$.transaction[-1].data[0].execution_info.tx_hash}}"
+      Then cmd: "transaction build --function rooch_framework::empty::empty --json"
+      Then assert: "'{{$.transaction[-1]}}' not_contains error"
+      Then cmd: "transaction sign {{$.transaction[-1].path}} --json -y"
+      Then assert: "'{{$.transaction[-1]}}' not_contains error"
+      Then cmd: "transaction submit {{$.transaction[-1].path}}"
+      Then assert: "{{$.transaction[-1].execution_info.status.type}} == executed"
+      Then cmd: "transaction query --sender default --limit 1"
+      Then assert: "'{{$.transaction[-1]}}' not_contains error"
+      Then cmd: "transaction query --tx-hashes {{$.transaction[-1].data[0].execution_info.tx_hash}}"
+      Then assert: "'{{$.transaction[-1].data[0].execution_info.status.type}}' == executed"
+      Then cmd: "transaction query --from-order 1 --to-order 2"
+      Then assert: "'{{$.transaction[-1]}}' not_contains error"
+      Then cmd: "transaction query --start-time 0 --end-time 1735689600 --limit 1"
+      Then assert: "'{{$.transaction[-1]}}' not_contains error"
+
+      # alias tx for transaction
+      Then cmd: "tx get-transactions-by-order --cursor 1 --limit 2 --descending-order true"
 
       # account balance
       Then cmd: "account balance"
-      Then cmd: "account balance --coin-type rooch_framework::gas_coin::GasCoin"
-      Then cmd: "rpc request --method rooch_getBalance --params '["{{$.address_mapping.default}}", "0x3::gas_coin::GasCoin"]' --json"
+      Then cmd: "account balance --coin-type rooch_framework::gas_coin::RGas"
+      Then cmd: "rpc request --method rooch_getBalance --params '["{{$.address_mapping.default}}", "0x3::gas_coin::RGas"]' --json"
       Then assert: "'{{$.rpc[-1].balance}}' != '0'"
 
       Then stop the server
@@ -81,6 +104,9 @@ Feature: Rooch CLI integration tests
       Given a server for state
       Then cmd: "object -i 0x3" 
       Then cmd: "object -i 0x2::timestamp::Timestamp"
+      Then cmd: "dynamic-field list-field-states --object-id 0x3"
+      Then cmd: "dynamic-field get-field-states --object-id 0x3 --field-keys 0x385f84a2110d6b31412fab278ea8c321d160fdcfa7b745e66e5bf76106280dc5"
+      Then assert: "{{$.dynamic-field[-2].data[0].state.id}} == {{$.dynamic-field[-1][0].id}}"
       Then cmd: "state --access-path /object/0x2::timestamp::Timestamp"
       Then assert: "{{$.state[-1][0].object_type}} == '0x2::timestamp::Timestamp'"
       Then cmd: "state --access-path /object/0x3::chain_id::ChainID"
@@ -88,8 +114,8 @@ Feature: Rooch CLI integration tests
       Then assert: "{{$.state[-1][0].decoded_value.value.id}} == 4"
       Then cmd: "state --access-path /object/0x3::address_mapping::RoochToBitcoinAddressMapping"
       Then assert: "{{$.state[-1][0].object_type}} == '0x3::address_mapping::RoochToBitcoinAddressMapping'"
-      Then cmd: "state --access-path /object/0x3::coin::CoinInfo<0x3::gas_coin::GasCoin>"
-      Then assert: "{{$.state[-1][0].object_type}} == '0x3::coin::CoinInfo<0x3::gas_coin::GasCoin>'"
+      Then cmd: "state --access-path /object/0x3::coin::CoinInfo<0x3::gas_coin::RGas>"
+      Then assert: "{{$.state[-1][0].object_type}} == '0x3::coin::CoinInfo<0x3::gas_coin::RGas>'"
       Then stop the server
 
     @serial
@@ -148,7 +174,7 @@ Feature: Rooch CLI integration tests
     # Sync states
     Then cmd: "object -t 0x3::coin::CoinInfo --limit 10 -d"
     Then assert: "{{$.object[-1].data[0].tx_order}} == 1"
-    Then assert: "{{$.object[-1].data[0].object_type}} == 0x3::coin::CoinInfo<0x3::gas_coin::GasCoin>"
+    Then assert: "{{$.object[-1].data[0].object_type}} == 0x3::coin::CoinInfo<0x3::gas_coin::RGas>"
     Then assert: "{{$.object[-1].has_next_page}} == false"
 
     Then cmd: "rpc request --method rooch_listFieldStates --params '["{{$.address_mapping.default}}", null, "10", {"descending": true,"showDisplay":false}]' --json"
@@ -226,8 +252,10 @@ Feature: Rooch CLI integration tests
   Scenario: publish_through_entry_function publish through Move entry function and module upgrade
       Given a server for publish_through_entry_function
 
-      # The counter example
-      Then cmd: "move publish -p ../../examples/counter  --named-addresses rooch_examples=default --json"
+      # The counter example, publishing from saved package binary.
+      Then cmd: "move build -p ../../examples/counter  --named-addresses rooch_examples=default --json"
+      Then assert: "{{$.move[-1].Result}} == Success"
+      Then cmd: "move run --function 0x2::module_store::publish_package_entry --sender default --args 'file:../../examples/counter/build/counter/package.rpd' --json"
       Then assert: "{{$.move[-1].execution_info.status.type}} == executed"
       Then cmd: "move view --function default::counter::value"
       Then assert: "{{$.move[-1].return_values[0].decoded_value}} == 0"
@@ -403,6 +431,22 @@ Feature: Rooch CLI integration tests
 
       # run wasm rust generator
       Then cmd: "move run --function default::wasm_execution::run_generator_rust --json"
+      Then assert: "{{$.move[-1].execution_info.status.type}} == executed"
+
+      # release servers
+      Then stop the server
+
+    @serial
+    Scenario: cosmwasm-vm test
+      # prepare servers
+      Given a server for wasm_test
+
+      # publish wasm execution
+      Then cmd: "move publish -p ../../examples/cosmwasm_vm_execution  --named-addresses rooch_examples=default --json"
+      Then assert: "{{$.move[-1].execution_info.status.type}} == executed"
+
+      # run cosmwasm execute example
+      Then cmd: "move run --function default::cosmwasm_vm_execution::run_cosmwasm_example --sender default --args 'file:./data/cosmwasm_vm_execution_opt.wasm' --json"
       Then assert: "{{$.move[-1].execution_info.status.type}} == executed"
 
       # release servers

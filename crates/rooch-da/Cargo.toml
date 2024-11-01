@@ -21,12 +21,14 @@ moveos-types = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 bcs = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 coerce = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
 opendal = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true }
 
 rooch-config = { workspace = true }
-serde_yaml = { workspace = true }
-xxhash-rust = { workspace = true, features = ["xxh3"] }
+rooch-types = { workspace = true }
+rooch-store = { workspace = true }
+

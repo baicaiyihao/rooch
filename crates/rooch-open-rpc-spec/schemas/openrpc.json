@@ -12,7 +12,7 @@
       "name": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/rooch-network/rooch/main/LICENSE"
     },
-    "version": "0.6.5"
+    "version": "0.7.6"
   },
   "methods": [
     {
@@ -122,6 +122,25 @@
         "required": true,
         "schema": {
           "$ref": "#/components/schemas/PageView_for_UTXOStateView_and_IndexerStateIDView"
+        }
+      }
+    },
+    {
+      "name": "rooch_dryRunRawTransaction",
+      "params": [
+        {
+          "name": "tx_bcs_hex",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
+          }
+        }
+      ],
+      "result": {
+        "name": "DryRunTransactionResponseView",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/DryRunTransactionResponseView"
         }
       }
     },
@@ -682,6 +701,33 @@
       }
     },
     {
+      "name": "rooch_repairIndexer",
+      "description": "Repair indexer by sync from states",
+      "params": [
+        {
+          "name": "repair_type",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/rooch_types::repair::RepairIndexerType"
+          }
+        },
+        {
+          "name": "repair_params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RepairIndexerParamsView"
+          }
+        }
+      ],
+      "result": {
+        "name": "()",
+        "required": true,
+        "schema": {
+          "type": "null"
+        }
+      }
+    },
+    {
       "name": "rooch_sendRawTransaction",
       "description": "Send the signed transaction in bcs hex format This method does not block waiting for the transaction to be executed.",
       "params": [
@@ -700,10 +746,86 @@
           "$ref": "#/components/schemas/primitive_types::H256"
         }
       }
+    },
+    {
+      "name": "rooch_status",
+      "description": "Get the chain and service status",
+      "params": [],
+      "result": {
+        "name": "Status",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Status"
+        }
+      }
+    },
+    {
+      "name": "rooch_syncStates",
+      "description": "Sync state change sets",
+      "params": [
+        {
+          "name": "filter",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SyncStateFilterView"
+          }
+        },
+        {
+          "name": "cursor",
+          "schema": {
+            "$ref": "#/components/schemas/u64"
+          }
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "$ref": "#/components/schemas/u64"
+          }
+        },
+        {
+          "name": "query_option",
+          "schema": {
+            "$ref": "#/components/schemas/QueryOptions"
+          }
+        }
+      ],
+      "result": {
+        "name": "StateChangeSetPageView",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/PageView_for_StateChangeSetWithTxOrderView_and_u64"
+        }
+      }
     }
   ],
   "components": {
     "schemas": {
+      "AccumulatorInfoView": {
+        "type": "object",
+        "required": [
+          "accumulator_root",
+          "frozen_subtree_roots",
+          "num_leaves",
+          "num_nodes"
+        ],
+        "properties": {
+          "accumulator_root": {
+            "$ref": "#/components/schemas/primitive_types::H256"
+          },
+          "frozen_subtree_roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/primitive_types::H256"
+            }
+          },
+          "num_leaves": {
+            "$ref": "#/components/schemas/u64"
+          },
+          "num_nodes": {
+            "$ref": "#/components/schemas/u64"
+          }
+        }
+      },
       "AnnotatedFunctionResultView": {
         "type": "object",
         "required": [
@@ -839,6 +961,12 @@
             "format": "uint8",
             "minimum": 0.0
           },
+          "icon_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -847,6 +975,116 @@
           },
           "symbol": {
             "type": "string"
+          }
+        }
+      },
+      "BitcoinStatus": {
+        "type": "object",
+        "properties": {
+          "confirmed_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlockHeightHashView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlockHeightHashView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "BlockHeightHashView": {
+        "type": "object",
+        "required": [
+          "block_hash",
+          "block_height"
+        ],
+        "properties": {
+          "block_hash": {
+            "type": "string"
+          },
+          "block_height": {
+            "$ref": "#/components/schemas/u64"
+          }
+        }
+      },
+      "DAServerStatus": {
+        "description": "DA server basic status",
+        "type": "object",
+        "required": [
+          "avail_backends"
+        ],
+        "properties": {
+          "avail_backends": {
+            "description": "The available backends names",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "last_avail_block_number": {
+            "description": "The last available block number, may little behind the last block number. [0, last_avail_block_number] blocks were confirmed by DA backend. If meet error in background submitter job, it may be far behind the last block number.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0.0
+          },
+          "last_avail_block_update_time": {
+            "description": "The last available block number updated time(Unix timestamp) If both of last_avail_block_number and last_avail_tx_order are not updated for a long time, it may indicate that the background submitter job is not working: 1. DA backends collapse 2. RoochStore is not consistent (cannot get tx from DB by tx order)",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "last_avail_tx_order": {
+            "description": "The last available tx order",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "last_block_number": {
+            "description": "The last block number",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint128",
+            "minimum": 0.0
+          },
+          "last_block_update_time": {
+            "description": "The last block number updated time(Unix timestamp in seconds) Should be closed to request time if there were new blocks. None if no blocks were received after server start.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "last_tx_order": {
+            "description": "The last tx order in the last block",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
           }
         }
       },
@@ -864,8 +1102,48 @@
           }
         }
       },
+      "DryRunTransactionResponseView": {
+        "type": "object",
+        "required": [
+          "raw_output",
+          "vm_error_info"
+        ],
+        "properties": {
+          "raw_output": {
+            "$ref": "#/components/schemas/RawTransactionOutputView"
+          },
+          "vm_error_info": {
+            "$ref": "#/components/schemas/VMErrorInfo"
+          }
+        }
+      },
       "EventFilterView": {
         "oneOf": [
+          {
+            "description": "Query by event type with sender",
+            "type": "object",
+            "required": [
+              "event_type_with_sender"
+            ],
+            "properties": {
+              "event_type_with_sender": {
+                "type": "object",
+                "required": [
+                  "event_type",
+                  "sender"
+                ],
+                "properties": {
+                  "event_type": {
+                    "$ref": "#/components/schemas/move_core_types::language_storage::StructTag"
+                  },
+                  "sender": {
+                    "$ref": "#/components/schemas/rooch_rpc_api::jsonrpc_types::address::UnitedAddress"
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          },
           {
             "description": "Query by event type.",
             "type": "object",
@@ -1052,6 +1330,16 @@
           "sequence_info"
         ],
         "properties": {
+          "error_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DryRunTransactionResponseView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "execution_info": {
             "$ref": "#/components/schemas/TransactionExecutionInfoView"
           },
@@ -1295,41 +1583,27 @@
             "additionalProperties": false
           },
           {
-            "description": "Query by inscription id, represent by bitcoin txid and index",
+            "description": "Query by inscription id, represent by bitcoin {{txid}i{index}}",
             "type": "object",
             "required": [
               "inscription_id"
             ],
             "properties": {
               "inscription_id": {
-                "type": "object",
-                "required": [
-                  "index",
-                  "txid"
-                ],
-                "properties": {
-                  "index": {
-                    "type": "integer",
-                    "format": "uint32",
-                    "minimum": 0.0
-                  },
-                  "txid": {
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/components/schemas/rooch_types::bitcoin::ord::InscriptionID"
               }
             },
             "additionalProperties": false
           },
           {
-            "description": "Query by object id.",
+            "description": "Query by object ids.",
             "type": "object",
             "required": [
               "object_id"
             ],
             "properties": {
               "object_id": {
-                "$ref": "#/components/schemas/ObjectID"
+                "$ref": "#/components/schemas/alloc::vec::Vec<moveos_types::moveos_std::object::ObjectID>"
               }
             },
             "additionalProperties": false
@@ -1367,7 +1641,7 @@
             "minimum": 0.0
           },
           "id": {
-            "$ref": "#/components/schemas/ObjectID"
+            "$ref": "#/components/schemas/moveos_types::moveos_std::object::ObjectID"
           },
           "object_type": {
             "$ref": "#/components/schemas/move_core_types::language_storage::TypeTag"
@@ -1411,23 +1685,23 @@
       "InscriptionView": {
         "type": "object",
         "required": [
-          "bitcoin_txid",
           "body",
-          "index",
+          "charms",
+          "id",
           "inscription_number",
-          "is_curse",
+          "location",
           "metadata",
-          "offset",
           "parents",
-          "sequence_number",
-          "txid"
+          "sequence_number"
         ],
         "properties": {
-          "bitcoin_txid": {
-            "$ref": "#/components/schemas/bitcoin::hash_types::newtypes::Txid"
-          },
           "body": {
             "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
+          },
+          "charms": {
+            "type": "integer",
+            "format": "uint16",
+            "minimum": 0.0
           },
           "content_encoding": {
             "anyOf": [
@@ -1449,18 +1723,15 @@
               }
             ]
           },
-          "index": {
-            "type": "integer",
-            "format": "uint32",
-            "minimum": 0.0
+          "id": {
+            "$ref": "#/components/schemas/rooch_types::bitcoin::ord::InscriptionID"
           },
           "inscription_number": {
             "type": "integer",
-            "format": "uint32",
-            "minimum": 0.0
+            "format": "int32"
           },
-          "is_curse": {
-            "type": "boolean"
+          "location": {
+            "$ref": "#/components/schemas/SatPointView"
           },
           "metadata": {
             "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
@@ -1475,11 +1746,11 @@
               }
             ]
           },
-          "offset": {
-            "$ref": "#/components/schemas/u64"
-          },
           "parents": {
-            "$ref": "#/components/schemas/alloc::vec::Vec<moveos_types::moveos_std::object::ObjectID>"
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/rooch_types::bitcoin::ord::InscriptionID"
+            }
           },
           "pointer": {
             "anyOf": [
@@ -1495,9 +1766,6 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 0.0
-          },
-          "txid": {
-            "$ref": "#/components/schemas/primitive_types::H256"
           }
         }
       },
@@ -1625,6 +1893,12 @@
               "type"
             ],
             "properties": {
+              "bitcoin_block_hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "block_hash": {
                 "$ref": "#/components/schemas/alloc::vec::Vec<u8>"
               },
@@ -2067,14 +2341,10 @@
               "object_type_with_owner": {
                 "type": "object",
                 "required": [
-                  "filter_out",
                   "object_type",
                   "owner"
                 ],
                 "properties": {
-                  "filter_out": {
-                    "type": "boolean"
-                  },
                   "object_type": {
                     "$ref": "#/components/schemas/move_core_types::language_storage::StructTag"
                   },
@@ -2239,6 +2509,23 @@
           }
         ]
       },
+      "OutPointView": {
+        "type": "object",
+        "required": [
+          "txid",
+          "vout"
+        ],
+        "properties": {
+          "txid": {
+            "$ref": "#/components/schemas/bitcoin::blockdata::transaction::Txid"
+          },
+          "vout": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          }
+        }
+      },
       "PageView_for_BalanceInfoView_and_IndexerStateIDView": {
         "description": "`next_cursor` points to the last item in the page; Reading with `next_cursor` will start from the next item after `next_cursor` if `next_cursor` is `Some`, otherwise it will start from the first item.",
         "type": "object",
@@ -2384,6 +2671,35 @@
           }
         }
       },
+      "PageView_for_StateChangeSetWithTxOrderView_and_u64": {
+        "description": "`next_cursor` points to the last item in the page; Reading with `next_cursor` will start from the next item after `next_cursor` if `next_cursor` is `Some`, otherwise it will start from the first item.",
+        "type": "object",
+        "required": [
+          "data",
+          "has_next_page"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StateChangeSetWithTxOrderView"
+            }
+          },
+          "has_next_page": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/u64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "PageView_for_StateKVView_and_String": {
         "description": "`next_cursor` points to the last item in the page; Reading with `next_cursor` will start from the next item after `next_cursor` if `next_cursor` is `Some`, otherwise it will start from the first item.",
         "type": "object",
@@ -2480,10 +2796,109 @@
             "default": true,
             "type": "boolean"
           },
+          "filterOut": {
+            "description": "If true, filter out all match items.",
+            "default": false,
+            "type": "boolean"
+          },
           "showDisplay": {
             "description": "If true, result with display rendered is returned",
             "default": false,
             "type": "boolean"
+          }
+        }
+      },
+      "RawTransactionOutputView": {
+        "type": "object",
+        "required": [
+          "gas_used",
+          "is_upgrade",
+          "status"
+        ],
+        "properties": {
+          "gas_used": {
+            "$ref": "#/components/schemas/u64"
+          },
+          "is_upgrade": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/KeptVMStatusView"
+          }
+        }
+      },
+      "RepairIndexerParamsView": {
+        "oneOf": [
+          {
+            "description": "Repair by owner.",
+            "type": "object",
+            "required": [
+              "owner"
+            ],
+            "properties": {
+              "owner": {
+                "$ref": "#/components/schemas/rooch_rpc_api::jsonrpc_types::address::UnitedAddress"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "description": "Repair by object ids.",
+            "type": "object",
+            "required": [
+              "object_id"
+            ],
+            "properties": {
+              "object_id": {
+                "$ref": "#/components/schemas/alloc::vec::Vec<moveos_types::moveos_std::object::ObjectID>"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "RoochStatus": {
+        "type": "object",
+        "required": [
+          "root_state",
+          "sequencer_info"
+        ],
+        "properties": {
+          "root_state": {
+            "$ref": "#/components/schemas/RootStateView"
+          },
+          "sequencer_info": {
+            "$ref": "#/components/schemas/SequencerInfoView"
+          }
+        }
+      },
+      "RootStateView": {
+        "type": "object",
+        "required": [
+          "size",
+          "state_root"
+        ],
+        "properties": {
+          "size": {
+            "$ref": "#/components/schemas/u64"
+          },
+          "state_root": {
+            "$ref": "#/components/schemas/primitive_types::H256"
+          }
+        }
+      },
+      "SatPointView": {
+        "type": "object",
+        "required": [
+          "offset",
+          "output"
+        ],
+        "properties": {
+          "offset": {
+            "$ref": "#/components/schemas/u64"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutPointView"
           }
         }
       },
@@ -2511,6 +2926,53 @@
             }
           }
         }
+      },
+      "SequencerInfoView": {
+        "type": "object",
+        "required": [
+          "last_accumulator_info",
+          "last_order"
+        ],
+        "properties": {
+          "last_accumulator_info": {
+            "$ref": "#/components/schemas/AccumulatorInfoView"
+          },
+          "last_order": {
+            "$ref": "#/components/schemas/u64"
+          }
+        }
+      },
+      "ServiceStatus": {
+        "oneOf": [
+          {
+            "description": "The service is active and running normally.",
+            "type": "string",
+            "enum": [
+              "active"
+            ]
+          },
+          {
+            "description": "The service is in maintenance mode.",
+            "type": "string",
+            "enum": [
+              "maintenance"
+            ]
+          },
+          {
+            "description": "The service is in read-only mode.",
+            "type": "string",
+            "enum": [
+              "read-only-mode"
+            ]
+          },
+          {
+            "description": "The service is in date import mode.",
+            "type": "string",
+            "enum": [
+              "date-import-mode"
+            ]
+          }
+        ]
       },
       "SpecificStructView": {
         "description": "Some specific struct that we want to display in a special way for better readability",
@@ -2548,6 +3010,21 @@
           }
         }
       },
+      "StateChangeSetWithTxOrderView": {
+        "type": "object",
+        "required": [
+          "state_change_set",
+          "tx_order"
+        ],
+        "properties": {
+          "state_change_set": {
+            "$ref": "#/components/schemas/StateChangeSetView"
+          },
+          "tx_order": {
+            "$ref": "#/components/schemas/u64"
+          }
+        }
+      },
       "StateKVView": {
         "type": "object",
         "required": [
@@ -2575,8 +3052,87 @@
             "description": "If true, result with display rendered is returned",
             "default": false,
             "type": "boolean"
+          },
+          "stateRoot": {
+            "description": "The state root of remote stateDB",
+            "default": null,
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/primitive_types::H256"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
+      },
+      "Status": {
+        "type": "object",
+        "required": [
+          "bitcoin_status",
+          "da_server_status",
+          "rooch_status",
+          "service_status"
+        ],
+        "properties": {
+          "bitcoin_status": {
+            "description": "The status of the Bitcoin chain",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BitcoinStatus"
+              }
+            ]
+          },
+          "da_server_status": {
+            "description": "The status of the DA service",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DAServerStatus"
+              }
+            ]
+          },
+          "rooch_status": {
+            "description": "The status of the Rooch chain",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RoochStatus"
+              }
+            ]
+          },
+          "service_status": {
+            "description": "The status of the rpc service",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ServiceStatus"
+              }
+            ]
+          }
+        }
+      },
+      "SyncStateFilterView": {
+        "oneOf": [
+          {
+            "description": "Sync by object id.",
+            "type": "object",
+            "required": [
+              "object_i_d"
+            ],
+            "properties": {
+              "object_i_d": {
+                "$ref": "#/components/schemas/ObjectID"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "description": "Sync all.",
+            "type": "string",
+            "enum": [
+              "all"
+            ]
+          }
+        ]
       },
       "TransactionExecutionInfoView": {
         "type": "object",
@@ -2616,19 +3172,6 @@
             "properties": {
               "sender": {
                 "$ref": "#/components/schemas/rooch_rpc_api::jsonrpc_types::address::UnitedAddress"
-              }
-            },
-            "additionalProperties": false
-          },
-          {
-            "description": "Query by multi chain original address.",
-            "type": "object",
-            "required": [
-              "original_address"
-            ],
-            "properties": {
-              "original_address": {
-                "type": "string"
               }
             },
             "additionalProperties": false
@@ -2853,14 +3396,14 @@
             "additionalProperties": false
           },
           {
-            "description": "Query by object id.",
+            "description": "Query by object ids.",
             "type": "object",
             "required": [
               "object_id"
             ],
             "properties": {
               "object_id": {
-                "$ref": "#/components/schemas/ObjectID"
+                "$ref": "#/components/schemas/alloc::vec::Vec<moveos_types::moveos_std::object::ObjectID>"
               }
             },
             "additionalProperties": false
@@ -2898,7 +3441,7 @@
             "minimum": 0.0
           },
           "id": {
-            "$ref": "#/components/schemas/ObjectID"
+            "$ref": "#/components/schemas/moveos_types::moveos_std::object::ObjectID"
           },
           "object_type": {
             "$ref": "#/components/schemas/move_core_types::language_storage::TypeTag"
@@ -2953,7 +3496,7 @@
             "description": "The txid of the UTXO",
             "allOf": [
               {
-                "$ref": "#/components/schemas/bitcoin::hash_types::newtypes::Txid"
+                "$ref": "#/components/schemas/bitcoin::blockdata::transaction::Txid"
               }
             ]
           },
@@ -2963,7 +3506,7 @@
             "additionalProperties": {
               "type": "array",
               "items": {
-                "$ref": "#/components/schemas/ObjectID"
+                "$ref": "#/components/schemas/moveos_types::moveos_std::object::ObjectID"
               }
             }
           },
@@ -2988,6 +3531,24 @@
             "type": "integer",
             "format": "uint32",
             "minimum": 0.0
+          }
+        }
+      },
+      "VMErrorInfo": {
+        "type": "object",
+        "required": [
+          "error_message",
+          "execution_state"
+        ],
+        "properties": {
+          "error_message": {
+            "type": "string"
+          },
+          "execution_state": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -3079,7 +3640,7 @@
       "alloc::vec::Vec<u8>": {
         "type": "string"
       },
-      "bitcoin::hash_types::newtypes::Txid": {
+      "bitcoin::blockdata::transaction::Txid": {
         "type": "string"
       },
       "move_binary_format::file_format::Ability": {
@@ -3115,6 +3676,9 @@
       "moveos_types::move_types::FunctionId": {
         "type": "string"
       },
+      "moveos_types::moveos_std::object::ObjectID": {
+        "type": "string"
+      },
       "moveos_types::state::FieldKey": {
         "type": "string"
       },
@@ -3128,6 +3692,12 @@
         "type": "string"
       },
       "rooch_types::address::RoochAddress": {
+        "type": "string"
+      },
+      "rooch_types::bitcoin::ord::InscriptionID": {
+        "type": "string"
+      },
+      "rooch_types::repair::RepairIndexerType": {
         "type": "string"
       },
       "u128": {

@@ -15,6 +15,7 @@ use move_core_types::{
     account_address::AccountAddress, gas_algebra::NumBytes, language_storage::ModuleId,
     value::MoveTypeLayout, vm_status::StatusCode,
 };
+use move_vm_types::loaded_data::runtime_types::Type;
 use move_vm_types::values::{StructRef, Value};
 use moveos_types::{
     move_std::string::MoveString,
@@ -369,6 +370,40 @@ impl<'r> ObjectRuntime<'r> {
         self.get_loaded_module(module_id).map(|m| m.is_some())
     }
 
+    pub fn load_object_argument(
+        &mut self,
+        object_id: &ObjectID,
+        type_: &Type,
+        layout_loader: &dyn TypeLayoutLoader,
+    ) -> VMResult<()> {
+        let (rt_obj, _) = self
+            .load_object(layout_loader, object_id)
+            .map_err(|e| e.finish(Location::Module(object::MODULE_ID.clone())))?;
+        match type_ {
+            Type::Reference(_) | Type::MutableReference(_) => {
+                let pointer_value = rt_obj
+                    .borrow_object(None)
+                    .map_err(|e| e.finish(Location::Module(object::MODULE_ID.clone())))?;
+                //We cache the object pointer value in the object_pointer_in_args
+                //Ensure the reference count and the object can not be borrowed in Move
+                self.object_pointer_in_args
+                    .insert(object_id.clone(), RuntimeObjectArg::Ref(pointer_value));
+            }
+            Type::StructInstantiation(_, _) => {
+                let pointer_value = rt_obj
+                    .take_object(None)
+                    .map_err(|e| e.finish(Location::Module(object::MODULE_ID.clone())))?;
+                //We cache the object pointer value in the object_pointer_in_args
+                //Ensure the reference count and the object can not be borrowed in Move
+                self.object_pointer_in_args
+                    .insert(object_id.clone(), RuntimeObjectArg::Value(pointer_value));
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     pub fn load_arguments(
         &mut self,
         layout_loader: &dyn TypeLayoutLoader,
@@ -400,6 +435,13 @@ impl<'r> ObjectRuntime<'r> {
                             .insert(object_id.clone(), RuntimeObjectArg::Value(pointer_value));
                     }
                 }
+            }
+            if let ResolvedArg::ObjectVector(object_vector) = resolved_arg {
+                let mut resolved_args = vec![];
+                for object_arg in object_vector.iter() {
+                    resolved_args.push(ResolvedArg::Object(object_arg.clone()));
+                }
+                self.load_arguments(layout_loader, resolved_args.as_slice())?;
             }
         }
         Ok(())

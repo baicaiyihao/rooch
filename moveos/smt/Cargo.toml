@@ -16,26 +16,37 @@ rust-version = { workspace = true }
 [dependencies]
 
 anyhow = { workspace = true }
+backtrace = { workspace = true }
 bcs = { workspace = true }
 bytes = { workspace = true }
 byteorder = { workspace = true }
-backtrace = { workspace = true }
+bitcoin_hashes = { workspace = true }
+function_name = { workspace = true }
 hex = { workspace = true }
 log = { workspace = true }
+metrics = { workspace = true }
 more-asserts = { workspace = true }
 num-derive = { workspace = true }
 num-traits = { workspace = true }
 once_cell = { workspace = true }
 primitive-types = { workspace = true }
-proptest = { workspace = true }
-proptest-derive = { workspace = true }
+prometheus = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_bytes = { workspace = true }
 thiserror = { workspace = true }
-tiny-keccak = { workspace = true, features = ["keccak", "sha3"] }
-prometheus = { workspace = true }
-function_name = { workspace = true }
 
-metrics = { workspace = true }
+proptest = { optional = true, workspace = true }
+proptest-derive = { optional = true, workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+proptest-derive = { workspace = true }
+
+[features]
+default = []
+fuzzing = [
+    "proptest",
+    "proptest-derive",
+]

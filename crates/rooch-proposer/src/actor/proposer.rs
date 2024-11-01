@@ -1,15 +1,14 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::metrics::ProposerMetrics;
 use anyhow::Result;
 use async_trait::async_trait;
 use coerce::actor::{context::ActorContext, message::Handler, Actor};
 use prometheus::Registry;
-use std::sync::Arc;
-
-use crate::metrics::ProposerMetrics;
-use rooch_da::proxy::DAProxy;
+use rooch_da::proxy::DAServerProxy;
 use rooch_types::crypto::RoochKeyPair;
+use std::sync::Arc;
 
 use crate::scc::StateCommitmentChain;
 
@@ -25,7 +24,7 @@ pub struct ProposerActor {
 }
 
 impl ProposerActor {
-    pub fn new(proposer_key: RoochKeyPair, da_proxy: DAProxy, registry: &Registry) -> Self {
+    pub fn new(proposer_key: RoochKeyPair, da_proxy: DAServerProxy, registry: &Registry) -> Self {
         Self {
             proposer_key,
             scc: StateCommitmentChain::new(da_proxy),
@@ -76,7 +75,7 @@ impl Handler<ProposeBlock> for ProposerActor {
                 log::debug!("[ProposeBlock] no transaction to propose block");
             }
         };
-        //TODO submit to the on-chain SCC contract use the proposer key
+        // TODO submit to the on-chain SCC contract use the proposer key
         let _proposer_key = &self.proposer_key;
         let batch_size = block.map(|v| v.batch_size).unwrap_or(0u64);
         self.metrics

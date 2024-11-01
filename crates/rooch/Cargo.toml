@@ -17,13 +17,15 @@ rust-version = { workspace = true }
 [dependencies]
 anyhow = { workspace = true }
 bcs = { workspace = true }
-clap = { features = ["derive", ], workspace = true }
+clap = { features = ["derive"], workspace = true }
 chrono = { workspace = true }
 datatest-stable = { git = "https://github.com/rooch-network/diem-devtools", branch = "feature/pub-test-opts" }
 tokio = { features = ["full"], workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
+serde-reflection = { workspace = true }
 once_cell = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -33,7 +35,6 @@ termcolor = { workspace = true }
 itertools = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
-serde-reflection = { workspace = true }
 parking_lot = { workspace = true }
 rpassword = { workspace = true }
 fastcrypto = { workspace = true }
@@ -48,6 +49,21 @@ xorf = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
 vergen-pretty = { workspace = true }
 prometheus = { workspace = true }
+lazy_static = { workspace = true }
+schemars = { workspace = true }
+bitcoin = { workspace = true }
+bitcoincore-rpc = { workspace = true }
+ciborium = { workspace = true }
+wasmer = { workspace = true }
+tiny-keccak = { workspace = true }
+serenity = { features = [
+    "client",
+    "gateway",
+    "rustls_backend",
+    "cache",
+    "model",
+], workspace = true }
+futures = { workspace = true }
 
 move-bytecode-utils = { workspace = true }
 move-binary-format = { workspace = true }
@@ -65,6 +81,7 @@ move-vm-runtime = { workspace = true, features = ["stacktrace", "debugging", "te
 move-vm-test-utils = { workspace = true }
 move-model = { workspace = true }
 move-stdlib = { workspace = true }
+move-vm-types = { workspace = true }
 
 moveos-stdlib = { workspace = true }
 moveos-types = { workspace = true }
@@ -77,12 +94,12 @@ moveos-compiler = { workspace = true }
 moveos-config = { workspace = true }
 accumulator = { workspace = true }
 metrics = { workspace = true }
+moveos-gas-profiling = { workspace = true }
 
 framework-builder = { workspace = true }
 framework-types = { workspace = true }
 raw-store = { workspace = true }
 smt = { workspace = true }
-bitcoin = { workspace = true }
 bitcoin-move = { workspace = true }
 
 rooch-key = { workspace = true }
@@ -99,6 +116,8 @@ rooch-db = { workspace = true }
 rooch-common = { workspace = true }
 rooch-store = { workspace = true }
 rooch-sequencer = { workspace = true }
+rooch-faucet = { workspace = true }
+rooch-oracle = { workspace = true }
 
 framework-release = { workspace = true }
 

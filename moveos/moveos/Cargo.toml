@@ -28,6 +28,7 @@ regex = { workspace = true }
 parking_lot = { workspace = true }
 backtrace = { workspace = true }
 tracing-subscriber = { workspace = true }
+bcs = { workspace = true }
 
 move-binary-format = { workspace = true }
 move-core-types = { workspace = true }
@@ -48,3 +49,7 @@ moveos-store = { workspace = true }
 moveos-stdlib = { workspace = true }
 moveos-verifier = { workspace = true }
 moveos-object-runtime = { workspace = true }
+moveos-eventbus = { workspace = true }
+moveos-gas-profiling = { workspace = true }
+moveos-common = { workspace = true }
+thiserror = "1.0.65"

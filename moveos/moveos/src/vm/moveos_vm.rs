@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::data_cache::{into_change_set, MoveosDataCache};
-use crate::gas::table::ClassifiedGasMeter;
-use crate::gas::SwitchableGasMeter;
 use move_binary_format::compatibility::Compatibility;
 use move_binary_format::file_format::CompiledScript;
 use move_binary_format::normalized;
@@ -31,6 +29,7 @@ use move_vm_runtime::{
 };
 use move_vm_types::gas::UnmeteredGasMeter;
 use move_vm_types::loaded_data::runtime_types::{CachedStructIndex, StructType, Type};
+use moveos_common::types::{ClassifiedGasMeter, SwitchableGasMeter};
 use moveos_object_runtime::runtime::{ObjectRuntime, ObjectRuntimeContext};
 use moveos_stdlib::natives::moveos_stdlib::{
     event::NativeEventContext, move_module::NativeModuleContext,
@@ -126,6 +125,10 @@ impl MoveOSVM {
     pub fn mark_loader_cache_as_invalid(&self) {
         self.inner.mark_loader_cache_as_invalid()
     }
+
+    pub fn inner(&self) -> &MoveVM {
+        &self.inner
+    }
 }
 
 /// MoveOSSession is a wrapper of MoveVM session with MoveOS specific features.
@@ -214,8 +217,8 @@ where
                 let location = Location::Script;
                 moveos_verifier::verifier::verify_entry_function(&loaded_function, &self.session)
                     .map_err(|e| e.finish(location.clone()))?;
-                let _resolved_args =
-                    self.resolve_argument(&loaded_function, call.args.clone(), location)?;
+                let _serialized_args =
+                    self.resolve_argument(&loaded_function, call.args.clone(), location, false)?;
 
                 let compiled_script_opt = CompiledScript::deserialize(call.code.as_slice());
                 let compiled_script = match compiled_script_opt {
@@ -242,7 +245,7 @@ where
                 moveos_verifier::verifier::verify_entry_function(&loaded_function, &self.session)
                     .map_err(|e| e.finish(location.clone()))?;
                 let _resolved_args =
-                    self.resolve_argument(&loaded_function, call.args.clone(), location)?;
+                    self.resolve_argument(&loaded_function, call.args.clone(), location, false)?;
                 Ok(VerifiedMoveAction::Function {
                     call,
                     bypass_visibility: false,
@@ -300,15 +303,15 @@ where
     /// The caller should ensure call verify_move_action before execute.
     /// Once we start executing transactions, we must ensure that the transaction execution has a result, regardless of success or failure,
     /// and we need to save the result and deduct gas
-    pub(crate) fn execute_move_action(&mut self, action: VerifiedMoveAction) -> VMResult<()> {
+    pub fn execute_move_action(&mut self, action: VerifiedMoveAction) -> VMResult<()> {
         let action_result = match action {
             VerifiedMoveAction::Script { call } => {
                 let loaded_function = self
                     .session
                     .load_script(call.code.as_slice(), call.ty_args.clone())?;
                 let location: Location = Location::Script;
-                let resolved_args = self.resolve_argument(&loaded_function, call.args, location)?;
-                let serialized_args = self.load_arguments(resolved_args)?;
+                let serialized_args =
+                    self.resolve_argument(&loaded_function, call.args, location, true)?;
                 self.session
                     .execute_script(
                         call.code,
@@ -333,8 +336,8 @@ where
                     call.ty_args.as_slice(),
                 )?;
                 let location = Location::Module(call.function_id.module_id.clone());
-                let resolved_args = self.resolve_argument(&loaded_function, call.args, location)?;
-                let serialized_args = self.load_arguments(resolved_args)?;
+                let serialized_args =
+                    self.resolve_argument(&loaded_function, call.args, location, true)?;
                 if bypass_visibility {
                     // bypass visibility call is system call, such as execute L1 block transaction
                     self.session
@@ -505,8 +508,7 @@ where
             call.ty_args.as_slice(),
         )?;
         let location = Location::Module(call.function_id.module_id.clone());
-        let resolved_args = self.resolve_argument(&loaded_function, call.args, location)?;
-        let serialized_args = self.load_arguments(resolved_args)?;
+        let serialized_args = self.resolve_argument(&loaded_function, call.args, location, true)?;
         let return_values = self.session.execute_function_bypass_visibility(
             &call.function_id.module_id,
             &call.function_id.function_name,
@@ -666,11 +668,12 @@ where
                 events,
                 gas_used,
                 is_upgrade,
+                is_gas_upgrade: false,
             },
         ))
     }
 
-    pub(crate) fn execute_function_call(
+    pub fn execute_function_call(
         &mut self,
         functions: Vec<FunctionCall>,
         meter_gas: bool,

@@ -24,6 +24,10 @@ impl AccountKeystore for InMemKeystore {
         self.keystore.get_accounts(password)
     }
 
+    fn contains_address(&self, address: &RoochAddress) -> bool {
+        self.keystore.contains_address(address)
+    }
+
     fn add_address_encryption_data_to_keys(
         &mut self,
         address: RoochAddress,
@@ -77,7 +81,8 @@ impl AccountKeystore for InMemKeystore {
 
     fn addresses(&self) -> Vec<RoochAddress> {
         // Create an empty Vec to store the addresses.
-        let mut addresses = Vec::new();
+        let mut addresses =
+            Vec::with_capacity(self.keystore.keys.len() + self.keystore.session_keys.len());
 
         // Iterate over the `keys` and `session_keys` BTreeMaps.
         for key in self.keystore.keys.keys() {

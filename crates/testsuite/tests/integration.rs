@@ -82,6 +82,8 @@ async fn start_server(w: &mut World, _scenario: String) {
             info!("bitcoind server is none");
         }
     }
+    w.opt.traffic_burst_size = Some(5000u32);
+    w.opt.traffic_per_second = Some(2u64);
 
     let mut server_opt = ServerOpt::new();
     //TODO we should load keypair from cli config
@@ -573,7 +575,8 @@ async fn assert_output(world: &mut World, orginal_args: String) {
                     second
                 ),
                 "not_contains" => assert!(
-                    !first.contains(&second),
+                    !first.contains(&second)
+                        && !first.to_lowercase().contains(&second.to_lowercase()),
                     "Assert {:?} not_contains {:?} failed",
                     first,
                     second

@@ -11,6 +11,7 @@ mod move_types;
 mod rooch_types;
 mod rpc_options;
 mod state_view;
+mod status;
 
 #[cfg(test)]
 mod tests;
@@ -23,6 +24,7 @@ pub mod transaction_view;
 
 pub mod address;
 pub mod btc;
+pub mod repair_view;
 
 pub use self::rooch_types::*;
 pub use address::*;
@@ -32,5 +34,6 @@ pub use module_abi_view::*;
 pub use move_types::*;
 pub use rpc_options::*;
 pub use state_view::*;
+pub use status::*;
 pub use str_view::*;
 pub use transaction_argument_view::*;

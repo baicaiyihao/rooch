@@ -10,7 +10,6 @@ use crate::{
     },
     state::StateChangeSet,
 };
-use move_core_types::gas_algebra::InternalGas;
 use move_core_types::{
     account_address::AccountAddress,
     language_storage::{ModuleId, TypeTag},
@@ -20,7 +19,7 @@ use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer, Serialize,
 };
-use std::fmt::{self, Display};
+use std::fmt::{self, Display, Formatter};
 
 #[cfg(any(test, feature = "fuzzing"))]
 use crate::move_types::type_tag_prop_strategy;
@@ -33,6 +32,7 @@ use proptest::prelude::*;
 #[cfg(any(test, feature = "fuzzing"))]
 use proptest_derive::Arbitrary;
 use rand::random;
+use schemars::JsonSchema;
 
 /// Call a Move script
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -196,6 +196,43 @@ impl From<ScriptCall> for MoveAction {
     }
 }
 
+impl Display for MoveAction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            MoveAction::Script(script) => {
+                let code_hex = hex::encode(script.code.clone());
+                let mut arg_list = vec![];
+                for arg in script.args.iter() {
+                    arg_list.push(format!("0x{:}", hex::encode(arg)));
+                }
+                write!(
+                    f,
+                    "MoveAction::ScriptCall( code: 0x{:?},  type_args: {:?}, args: {:?})",
+                    code_hex, script.ty_args, arg_list
+                )
+            }
+            MoveAction::Function(function) => {
+                let mut arg_list = vec![];
+                for arg in function.args.iter() {
+                    arg_list.push(format!("0x{:}", hex::encode(arg)));
+                }
+                write!(
+                    f,
+                    "MoveAction::FunctionCall( function_id: {},  type_args: {:?}, args: {:?})",
+                    function.function_id, function.ty_args, arg_list
+                )
+            }
+            MoveAction::ModuleBundle(module_bundle) => {
+                let mut module_list = vec![];
+                for arg in module_bundle.iter() {
+                    module_list.push(format!("0x{:}", hex::encode(arg)));
+                }
+                write!(f, "MoveAction::ModuleBundle( {:?} )", module_list)
+            }
+        }
+    }
+}
+
 /// The MoveAction after verifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum VerifiedMoveAction {
@@ -350,12 +387,6 @@ impl<'de> Deserialize<'de> for MoveOSTransaction {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct GasStatement {
-    pub execution_gas_used: InternalGas,
-    pub storage_gas_used: InternalGas,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedMoveOSTransaction {
     pub root: ObjectMeta,
@@ -369,20 +400,36 @@ impl VerifiedMoveOSTransaction {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct VMErrorInfo {
+    pub error_message: String,
+    pub execution_state: Vec<String>,
+}
+
+impl Default for VMErrorInfo {
+    fn default() -> Self {
+        Self {
+            error_message: "".to_string(),
+            execution_state: vec![],
+        }
+    }
+}
+
 /// RawTransactionOutput is the execution result of a MoveOS transaction
-//TODO make RawTransactionOutput serializable
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RawTransactionOutput {
     pub status: KeptVMStatus,
+    //The changeset in RawTransactionOutput is not the same as the changeset in TransactionOutput
+    //Because the changeset do not apply to the state tree, so it's StateRoot not updated
     pub changeset: StateChangeSet,
     pub events: Vec<TransactionEvent>,
     pub gas_used: u64,
     pub is_upgrade: bool,
+    pub is_gas_upgrade: bool,
 }
 
 /// TransactionOutput is the execution result of a MoveOS transaction, and pack TransactionEvent to Event
-//TODO make TransactionOutput serializable
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionOutput {
     pub status: KeptVMStatus,
     pub changeset: StateChangeSet,

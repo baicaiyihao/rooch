@@ -4,7 +4,13 @@
 import { Args } from '../bcs/index.js'
 import { Signer } from '../crypto/index.js'
 import { CreateSessionArgs, Session } from '../session/index.js'
-import { isValidRoochAddress, decodeToRoochAddressStr } from '../address/index.js'
+import {
+  isValidRoochAddress,
+  decodeToRoochAddressStr,
+  Address,
+  BitcoinAddress,
+  BitcoinNetowkType,
+} from '../address/index.js'
 import { address, Bytes, u64 } from '../types/index.js'
 import { fromHEX, str } from '../utils/index.js'
 import { RoochHTTPTransport, RoochTransport } from './httpTransport.js'
@@ -44,6 +50,7 @@ import {
   PaginatedIndexerEventViews,
   ModuleABIView,
   GetModuleABIParams,
+  BroadcastTXParams,
 } from './types/index.js'
 
 /**
@@ -217,6 +224,13 @@ export class RoochClient {
     })
   }
 
+  async broadcastBitcoinTX(input: BroadcastTXParams): Promise<string> {
+    return this.transport.request({
+      method: 'btc_broadcastTX',
+      params: [input.hex, input.maxfeerate, input.maxburnamount],
+    })
+  }
+
   async queryObjectStates(
     input: QueryObjectStatesParams,
   ): Promise<PaginatedIndexerObjectStateViews> {
@@ -244,7 +258,7 @@ export class RoochClient {
     })
 
     if (resp && resp.return_values) {
-      return BigInt(resp.return_values[0].decoded_value as number)
+      return BigInt(resp.return_values?.[0]?.decoded_value as number)
     }
 
     return BigInt(0)
@@ -311,6 +325,26 @@ export class RoochClient {
     })
   }
 
+  async resolveBTCAddress(input: {
+    roochAddress: string | Address
+    network: BitcoinNetowkType
+  }): Promise<BitcoinAddress | undefined> {
+    const result = await this.executeViewFunction({
+      target: '0x3::address_mapping::resolve_bitcoin',
+      args: [Args.address(input.roochAddress)],
+    })
+
+    if (result.vm_status === 'Executed' && result.return_values) {
+      const value = (result.return_values?.[0]?.decoded_value as AnnotatedMoveStructView).value
+
+      const address = (((value as any).vec[0] as AnnotatedMoveStructView).value as any).bytes
+
+      return new BitcoinAddress(address, input.network)
+    }
+
+    return undefined
+  }
+
   async createSession({ sessionArgs, signer }: { sessionArgs: CreateSessionArgs; signer: Signer }) {
     return Session.CREATE({
       ...sessionArgs,
@@ -352,7 +386,7 @@ export class RoochClient {
       throw new Error('view 0x3::session_key::is_expired_session_key fail')
     }
 
-    return result.return_values![0].decoded_value as boolean
+    return result.return_values![0]?.decoded_value as boolean
   }
 
   async getSessionKeys({
@@ -382,7 +416,7 @@ export class RoochClient {
     const tableId = (
       (
         (
-          (states[0].decoded_value as AnnotatedMoveStructView).value[
+          (states?.[0]?.decoded_value as AnnotatedMoveStructView).value[
             'value'
           ] as AnnotatedMoveStructView
         ).value['keys'] as AnnotatedMoveStructView
@@ -416,7 +450,7 @@ export class RoochClient {
       const result = new Array<SessionInfoView>()
 
       for (const state of statePage.data as any) {
-        const moveValue = state?.state.decoded_value as any
+        const moveValue = state?.state?.decoded_value as any
 
         if (moveValue) {
           const val = moveValue.value.value.value

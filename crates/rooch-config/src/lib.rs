@@ -1,6 +1,8 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::da_config::DAConfig;
+use crate::store_config::StoreConfig;
 use anyhow::Result;
 use clap::Parser;
 use moveos_config::{temp_dir, DataDirPath};
@@ -9,14 +11,13 @@ use rooch_types::crypto::RoochKeyPair;
 use rooch_types::genesis_config::GenesisConfig;
 use rooch_types::rooch_network::{BuiltinChainID, RoochChainID, RoochNetwork};
 use rooch_types::service_status::ServiceStatus;
+use rooch_types::service_type::ServiceType;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{fmt::Debug, path::Path, path::PathBuf};
-
-use crate::da_config::DAConfig;
-use crate::store_config::StoreConfig;
 
 pub mod config;
 pub mod da_config;
@@ -33,6 +34,14 @@ pub static R_DEFAULT_BASE_DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
         .expect("read home dir should ok")
         .join(".rooch")
 });
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MapConfigValueSource {
+    MapConfig,   // Value came from the presence of a key in the map configuration
+    Environment, // Value came from the environment
+    Default,     // Value came from a defined default value
+    None,        // Value is not present in the map configuration, environment, or default value
+}
 
 pub fn rooch_config_dir() -> Result<PathBuf, anyhow::Error> {
     get_rooch_config_dir().and_then(|dir| {
@@ -135,6 +144,23 @@ pub struct RoochOpt {
     #[clap(long, default_value_t, value_enum)]
     pub service_status: ServiceStatus,
 
+    /// Set quota size that defines how many requests can occur
+    /// before the governor middleware starts blocking requests from an IP address and
+    /// clients have to wait until the elements of the quota are replenished.
+    ///
+    /// **The burst_size must not be zero.**
+    #[clap(long)]
+    pub traffic_burst_size: Option<u32>,
+
+    /// Set the interval after which one element of the quota is replenished in seconds.
+    ///
+    /// **The interval must not be zero.**
+    #[clap(long)]
+    pub traffic_per_second: Option<u64>,
+
+    #[clap(long, default_value_t, value_enum)]
+    pub service_type: ServiceType,
+
     #[serde(skip)]
     #[clap(skip)]
     base: Option<Arc<BaseConfig>>,
@@ -168,7 +194,10 @@ impl RoochOpt {
             proposer_account: None,
             da: DAConfig::default(),
             service_status: ServiceStatus::default(),
+            traffic_per_second: None,
+            traffic_burst_size: None,
             base: None,
+            service_type: ServiceType::default(),
         };
         opt.init()?;
         Ok(opt)
@@ -348,9 +377,106 @@ impl ServerOpt {
     }
 
     pub fn get_active_env(&self) -> String {
-        match self.active_env.clone() {
-            Some(env) => env,
-            None => RoochChainID::default().chain_name(),
+        self.active_env
+            .clone()
+            .unwrap_or_else(|| RoochChainID::default().chain_name())
+    }
+}
+
+// value order:
+// 1. config map
+// 2. env value
+// 3. default value
+pub fn retrieve_map_config_value(
+    map_config: &mut HashMap<String, String>,
+    key: &str,
+    env_var: Option<&str>,
+    default_var: Option<&str>,
+) -> MapConfigValueSource {
+    if map_config.contains_key(key) {
+        return MapConfigValueSource::MapConfig;
+    }
+
+    if let Some(env_var) = env_var {
+        if let Ok(env_var_value) = std::env::var(env_var) {
+            // env_var exists
+            map_config.insert(key.to_string(), env_var_value.clone());
+            return MapConfigValueSource::Environment;
+        }
+    }
+
+    // Use the default
+    if let Some(default_var) = default_var {
+        map_config.insert(key.to_string(), default_var.to_string());
+        return MapConfigValueSource::Default;
+    }
+    MapConfigValueSource::None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    mod retrieve_map_config_value_tests {
+        use super::*;
+        use std::time;
+
+        #[test]
+        fn returns_map_config_when_key_exists() {
+            let mut map_config = HashMap::new();
+            map_config.insert("key1".to_string(), "value1".to_string());
+
+            assert_eq!(
+                retrieve_map_config_value(&mut map_config, "key1", None, Some("default")),
+                MapConfigValueSource::MapConfig
+            );
+        }
+
+        #[test]
+        fn returns_default_when_key_does_not_exist_and_no_env_var() {
+            let mut map_config = HashMap::new();
+
+            assert_eq!(
+                retrieve_map_config_value(&mut map_config, "key2", None, Some("default")),
+                MapConfigValueSource::Default
+            );
+            assert_eq!(map_config.get("key2").unwrap(), "default");
+        }
+
+        #[test]
+        fn returns_environment_when_env_var_exists() {
+            let mut map_config = HashMap::new();
+
+            // make a random env key
+            let env_key = format!(
+                "TEST_ENV_VAR_{}",
+                time::SystemTime::now().elapsed().unwrap().as_secs()
+            );
+
+            env::set_var(env_key.clone(), "env_value");
+
+            assert_eq!(
+                retrieve_map_config_value(
+                    &mut map_config,
+                    "key2",
+                    Some(&env_key.clone()),
+                    Some("default")
+                ),
+                MapConfigValueSource::Environment
+            );
+            assert_eq!(map_config.get("key2").unwrap(), "env_value");
+
+            env::remove_var(env_key);
+        }
+
+        #[test]
+        fn returns_none_when_neither_key_nor_env_var_nor_default_exists() {
+            let mut map_config = HashMap::new();
+            assert_eq!(
+                retrieve_map_config_value(&mut map_config, "key3", None, None),
+                MapConfigValueSource::None
+            );
         }
     }
 }

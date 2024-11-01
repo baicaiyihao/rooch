@@ -1,36 +1,43 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fmt::Display;
+use crate::commands::statedb::commands::inscription::{derive_inscription_ids, InscriptionSource};
+use anyhow::{Error, Result};
+use bitcoin::hashes::Hash;
+use bitcoin::OutPoint;
+use csv::Writer;
+use metrics::RegistryService;
+use moveos_store::MoveOSStore;
+use moveos_types::h256::H256;
+use moveos_types::move_std::option::MoveOption;
+use moveos_types::move_std::string::MoveString;
+use moveos_types::moveos_std::object::{ObjectID, ObjectMeta};
+use moveos_types::moveos_std::simple_multimap::{Element, SimpleMultiMap};
+use moveos_types::state::{FieldKey, MoveType, ObjectState};
+use rooch_common::fs::file_cache::FileCacheManager;
+use rooch_config::RoochOpt;
+use rooch_db::RoochDB;
+use rooch_types::bitcoin::ord::{Inscription, InscriptionID};
+use rooch_types::error::RoochError;
+use rooch_types::rooch_network::RoochChainID;
+use smt::{TreeChangeSet, UpdateSet};
+use std::collections::BTreeMap;
+use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Instant;
-
-use bitcoin::hashes::Hash;
-use bitcoin::OutPoint;
 use xorf::{BinaryFuse8, Filter};
 use xxhash_rust::xxh3::xxh3_64;
 
-use bitcoin_move::natives::ord::inscription_id::InscriptionId;
-use metrics::RegistryService;
-use moveos_store::MoveOSStore;
-use moveos_types::move_std::option::MoveOption;
-use moveos_types::move_std::string::MoveString;
-use moveos_types::moveos_std::object::{ObjectID, ObjectMeta};
-use moveos_types::moveos_std::simple_multimap::{Element, SimpleMultiMap};
-use rooch_common::fs::file_cache::FileCacheManager;
-use rooch_config::RoochOpt;
-use rooch_db::RoochDB;
-use rooch_types::rooch_network::RoochChainID;
-
-use crate::commands::statedb::commands::inscription::{derive_inscription_ids, InscriptionSource};
-
 pub mod export;
 pub mod genesis;
+pub mod genesis_ord;
 pub mod genesis_utxo;
-pub mod import;
+pub mod genesis_verify;
+pub mod re_genesis;
+
 mod inscription;
 mod utxo;
 
@@ -39,8 +46,17 @@ pub const GLOBAL_STATE_TYPE_ROOT: &str = "states_root";
 pub const GLOBAL_STATE_TYPE_OBJECT: &str = "states_object";
 pub const GLOBAL_STATE_TYPE_FIELD: &str = "states_field";
 
-const UTXO_SEAL_INSCRIPTION_PROTOCOL: &str =
-    "0000000000000000000000000000000000000000000000000000000000000004::ord::Inscription";
+lazy_static::lazy_static! {
+    static ref UTXO_SEAL_INSCRIPTION_PROTOCOL: String = {
+        Inscription::type_tag().to_canonical_string()
+    };
+}
+
+fn init_rooch_db(base_data_dir: Option<PathBuf>, chain_id: Option<RoochChainID>) -> RoochDB {
+    let opt = RoochOpt::new_with_default(base_data_dir.clone(), chain_id.clone(), None).unwrap();
+    let registry_service = RegistryService::default();
+    RoochDB::init(opt.store_config(), &registry_service.default_registry()).unwrap()
+}
 
 fn init_job(
     base_data_dir: Option<PathBuf>,
@@ -48,9 +64,7 @@ fn init_job(
 ) -> (ObjectMeta, MoveOSStore, Instant) {
     let start_time = Instant::now();
 
-    let opt = RoochOpt::new_with_default(base_data_dir.clone(), chain_id.clone(), None).unwrap();
-    let registry_service = RegistryService::default();
-    let rooch_db = RoochDB::init(opt.store_config(), &registry_service.default_registry()).unwrap();
+    let rooch_db = init_rooch_db(base_data_dir, chain_id);
     let root = rooch_db
         .latest_root()
         .unwrap()
@@ -69,7 +83,7 @@ fn convert_option_string_to_move_type(opt: Option<String>) -> MoveOption<MoveStr
 #[derive(Clone, Default, PartialEq, Debug)]
 pub(crate) struct OutpointInscriptions {
     outpoint: OutPoint,
-    inscriptions: Vec<InscriptionId>,
+    inscriptions: Vec<InscriptionID>,
 }
 
 impl OutpointInscriptions {
@@ -108,8 +122,8 @@ impl FromStr for OutpointInscriptions {
         let outpoint = OutPoint::from_str(parts[0])?;
         let inscriptions = parts[1]
             .split(',')
-            .map(InscriptionId::from_str)
-            .collect::<Result<Vec<InscriptionId>, _>>()?;
+            .map(InscriptionID::from_str)
+            .collect::<Result<Vec<InscriptionID>, _>>()?;
         Ok(OutpointInscriptions {
             outpoint,
             inscriptions,
@@ -118,7 +132,7 @@ impl FromStr for OutpointInscriptions {
 }
 
 fn derive_utxo_inscription_seal(
-    inscriptions: Option<Vec<InscriptionId>>,
+    inscriptions: Option<Vec<InscriptionID>>,
 ) -> SimpleMultiMap<MoveString, ObjectID> {
     let obj_ids = derive_inscription_ids(inscriptions);
     if obj_ids.is_empty() {
@@ -126,12 +140,13 @@ fn derive_utxo_inscription_seal(
     }
     SimpleMultiMap {
         data: vec![Element {
-            key: MoveString::from_str(UTXO_SEAL_INSCRIPTION_PROTOCOL).unwrap(),
+            key: MoveString::from_str(&UTXO_SEAL_INSCRIPTION_PROTOCOL).unwrap(),
             value: obj_ids,
         }],
     }
 }
 
+// outpoint(original):inscriptions(original inscription_id) map
 pub(crate) struct OutpointInscriptionsMap {
     items: Vec<OutpointInscriptions>,
     key_filter: Option<BinaryFuse8>,
@@ -172,7 +187,8 @@ impl OutpointInscriptionsMap {
                 }
             }
             let src: InscriptionSource = InscriptionSource::from_str(&line);
-            let satpoint_output = OutPoint::from_str(src.satpoint_outpoint.as_str()).unwrap();
+            let satpoint_output = OutPoint::from_str(src.satpoint_outpoint.as_str())
+                .unwrap_or_else(|_| panic!("Invalid outpoint: {}", src.satpoint_outpoint));
             if satpoint_output == unbound_outpoint() {
                 unbound_count += 1;
                 continue; // skip unbounded outpoint
@@ -245,7 +261,7 @@ impl OutpointInscriptionsMap {
         let mut write_index = 0;
         for read_index in 1..items.len() {
             if items[write_index].outpoint == items[read_index].outpoint {
-                let drained_inscriptions: Vec<InscriptionId> =
+                let drained_inscriptions: Vec<InscriptionID> =
                     items[read_index].inscriptions.drain(..).collect();
                 items[write_index].inscriptions.extend(drained_inscriptions);
             } else {
@@ -288,7 +304,7 @@ impl OutpointInscriptionsMap {
         }
     }
 
-    fn search(&self, outpoint: &OutPoint) -> Option<Vec<InscriptionId>> {
+    fn search(&self, outpoint: &OutPoint) -> Option<Vec<InscriptionID>> {
         if !self.contains(outpoint) {
             return None;
         }
@@ -300,10 +316,9 @@ impl OutpointInscriptionsMap {
             .map(|index| items[index].inscriptions.clone())
     }
 
-    #[allow(dead_code)]
     fn load(path: PathBuf) -> Self {
         let file = File::open(path.clone()).expect("Unable to open the file");
-        let reader = BufReader::new(file);
+        let reader = BufReader::with_capacity(8 * 1024 * 1024, file);
         let mut items = Vec::new();
 
         for line in reader.lines() {
@@ -318,9 +333,41 @@ impl OutpointInscriptionsMap {
         OutpointInscriptionsMap::new(items, true)
     }
 
+    fn load_or_index(path: PathBuf, inscriptions_path: Option<PathBuf>) -> Self {
+        let start_time = Instant::now();
+        let map_existed = path.exists();
+        if map_existed {
+            log::info!("load outpoint_inscriptions_map...");
+            let outpoint_inscriptions_map = OutpointInscriptionsMap::load(path.clone());
+            let (outpoint_count, inscription_count) = outpoint_inscriptions_map.stats();
+            println!(
+                "{} outpoints : {} inscriptions mapped in: {:?}",
+                outpoint_count,
+                inscription_count,
+                start_time.elapsed(),
+            );
+            outpoint_inscriptions_map
+        } else {
+            log::info!("indexing and dumping outpoint_inscriptions_map...");
+            let (outpoint_inscriptions_map, mapped_outpoint, mapped_inscription, unbound_count) =
+                OutpointInscriptionsMap::index_and_dump(
+                    inscriptions_path.clone().expect("if outpoint_inscriptions_map not existed, inscriptions_path must be provided"),
+                    Some(path.clone()),
+                );
+            println!(
+                "{} outpoints : {} inscriptions mapped in: {:?} ({} unbound inscriptions ignored)",
+                mapped_outpoint,
+                mapped_inscription,
+                start_time.elapsed(),
+                unbound_count
+            );
+            outpoint_inscriptions_map
+        }
+    }
+
     fn dump(&self, path: PathBuf) {
         let file = File::create(path.clone()).expect("Unable to create the file");
-        let mut writer = BufWriter::new(file.try_clone().unwrap());
+        let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, file.try_clone().unwrap());
 
         for item in &self.items {
             writeln!(writer, "{}", item).expect("Unable to write line");
@@ -339,15 +386,129 @@ impl OutpointInscriptionsMap {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn get_values_by_key<Key, Value>(
+    map: SimpleMultiMap<Key, Value>,
+    key: Key,
+) -> Option<Vec<Value>>
+where
+    Key: PartialEq,
+{
+    for element in map.data {
+        if element.key == key {
+            return Some(element.value);
+        }
+    }
+    None
+}
+
+fn new_csv_writer(output: PathBuf) -> Writer<File> {
+    let mut writer_builder = csv::WriterBuilder::new();
+    let writer_builder = writer_builder
+        .delimiter(b',')
+        .double_quote(false)
+        .buffer_capacity(1 << 23);
+    writer_builder.from_path(output).unwrap()
+}
+
+trait ExportWriterPreprocessor {
+    fn process(&mut self, k: &FieldKey, v: &ObjectState) -> (FieldKey, ObjectState);
+    fn flush(&mut self) {}
+}
+
+// ExportWriter is a helper struct to write FieldKey:ObjectState pairs to a csv file
+pub(crate) struct ExportWriter {
+    writer: Option<Writer<File>>, // option here for nop writer
+    preprocessor: Option<Box<dyn ExportWriterPreprocessor>>,
+}
+
+impl ExportWriter {
+    fn new(
+        output: Option<PathBuf>,
+        preprocessor: Option<Box<dyn ExportWriterPreprocessor>>,
+    ) -> Self {
+        let writer = match output {
+            Some(output) => {
+                let writer = new_csv_writer(output);
+                Some(writer)
+            }
+            None => None,
+        };
+        ExportWriter {
+            writer,
+            preprocessor,
+        }
+    }
+    fn write_record(&mut self, k: &FieldKey, v: &ObjectState) -> Result<()> {
+        let (k, v) = match &mut self.preprocessor {
+            Some(preprocessor) => preprocessor.process(k, v),
+            None => (*k, v.clone()),
+        };
+
+        if let Some(writer) = &mut self.writer {
+            writer.write_record([k.to_string().as_str(), v.to_string().as_str()])?;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+    fn flush(&mut self) -> Result<()> {
+        if let Some(preprocessor) = &mut self.preprocessor {
+            preprocessor.flush();
+        }
+
+        if let Some(writer) = &mut self.writer {
+            writer.flush()?;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+// csv format: c1,c2
+// c1: FieldKey, c2: ObjectState
+pub fn parse_states_csv_fields(line: &str) -> Result<(String, String)> {
+    let str_list: Vec<&str> = line.trim().split(',').collect();
+    if str_list.len() != 2 {
+        return Err(Error::from(RoochError::from(Error::msg(format!(
+            "Invalid csv line: {}",
+            line
+        )))));
+    }
+    let c1 = str_list[0].to_string();
+    let c2 = str_list[1].to_string();
+    Ok((c1, c2))
+}
+
+pub fn apply_fields<I>(
+    moveos_store: &MoveOSStore,
+    pre_state_root: H256,
+    update_set: I,
+) -> Result<TreeChangeSet>
+where
+    I: Into<UpdateSet<FieldKey, ObjectState>>,
+{
+    let tree_change_set = moveos_store
+        .state_store
+        .update_fields(pre_state_root, update_set)?;
+    Ok(tree_change_set)
+}
+
+pub fn apply_nodes(moveos_store: &MoveOSStore, nodes: BTreeMap<H256, Vec<u8>>) -> Result<()> {
+    moveos_store.state_store.node_store.write_nodes(nodes)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
+    use super::*;
     use bitcoin::Txid;
     use rand::Rng;
+    use rooch_types::into_address::IntoAddress;
     use tempfile::tempdir;
-
-    use super::*;
 
     impl OutpointInscriptionsMap {
         fn is_sorted_and_merged(&self) -> bool {
@@ -370,17 +531,20 @@ mod tests {
         OutPoint { txid, vout }
     }
 
-    fn random_inscription_id() -> InscriptionId {
+    fn random_inscription_id() -> InscriptionID {
         let mut rng = rand::thread_rng();
         let txid: Txid = Txid::from_slice(&rng.gen::<[u8; 32]>()).unwrap();
         let index: u32 = rng.gen();
 
-        InscriptionId { txid, index }
+        InscriptionID {
+            txid: txid.into_address(),
+            index,
+        }
     }
 
     // all outpoints are unique
     fn random_outpoints(n: usize) -> Vec<OutPoint> {
-        let mut outpoints = HashSet::new();
+        let mut outpoints = HashSet::with_capacity(n);
         while outpoints.len() < n {
             outpoints.insert(random_outpoint());
         }
@@ -388,8 +552,8 @@ mod tests {
     }
 
     // all inscriptions are unique
-    fn random_inscriptions(n: usize) -> Vec<InscriptionId> {
-        let mut inscriptions = HashSet::new();
+    fn random_inscriptions(n: usize) -> Vec<InscriptionID> {
+        let mut inscriptions = HashSet::with_capacity(n);
         while inscriptions.len() < n {
             inscriptions.insert(random_inscription_id());
         }

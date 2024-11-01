@@ -1,29 +1,32 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::messages::{
-    GetSequencerOrderMessage, GetTransactionByHashMessage, GetTransactionsByHashMessage,
-    GetTxHashsMessage, TransactionSequenceMessage,
+    GetSequencerInfoMessage, GetSequencerOrderMessage, GetTransactionByHashMessage,
+    GetTransactionsByHashMessage, GetTxHashsMessage, TransactionSequenceMessage,
 };
 use crate::metrics::SequencerMetrics;
 use accumulator::{Accumulator, MerkleAccumulator};
 use anyhow::Result;
 use async_trait::async_trait;
-use coerce::actor::{context::ActorContext, message::Handler, Actor};
+use coerce::actor::{context::ActorContext, message::Handler, Actor, LocalActorRef};
 use function_name::named;
+use moveos_eventbus::bus::EventData;
 use moveos_types::h256::{self, H256};
 use prometheus::Registry;
-use rooch_store::meta_store::MetaStore;
+use rooch_event::actor::{EventActor, EventActorSubscribeMessage};
+use rooch_event::event::ServiceStatusEvent;
 use rooch_store::transaction_store::TransactionStore;
 use rooch_store::RoochStore;
 use rooch_types::crypto::{RoochKeyPair, Signature};
 use rooch_types::sequencer::SequencerInfo;
 use rooch_types::service_status::ServiceStatus;
 use rooch_types::transaction::{LedgerTransaction, LedgerTxData};
-use tracing::info;
+use tracing::{info, log};
 
 pub struct SequencerActor {
     last_sequencer_info: SequencerInfo,
@@ -32,6 +35,7 @@ pub struct SequencerActor {
     rooch_store: RoochStore,
     service_status: ServiceStatus,
     metrics: Arc<SequencerMetrics>,
+    event_actor: Option<LocalActorRef<EventActor>>,
 }
 
 impl SequencerActor {
@@ -40,8 +44,9 @@ impl SequencerActor {
         rooch_store: RoochStore,
         service_status: ServiceStatus,
         registry: &Registry,
+        event_actor: Option<LocalActorRef<EventActor>>,
     ) -> Result<Self> {
-        // The sequencer info would be inited when genesis, so the sequencer info should not be None
+        // The sequencer info would be initialized when genesis, so the sequencer info should not be None
         let last_sequencer_info = rooch_store
             .get_meta_store()
             .get_sequencer_info()?
@@ -67,7 +72,22 @@ impl SequencerActor {
             rooch_store,
             service_status,
             metrics: Arc::new(SequencerMetrics::new(registry)),
+            event_actor,
         })
+    }
+
+    pub async fn subscribe_event(
+        &self,
+        event_actor_ref: LocalActorRef<EventActor>,
+        executor_actor_ref: LocalActorRef<SequencerActor>,
+    ) {
+        let service_status_event = ServiceStatusEvent::default();
+        let actor_subscribe_message = EventActorSubscribeMessage::new(
+            service_status_event,
+            "sequencer".to_string(),
+            Box::new(executor_actor_ref),
+        );
+        let _ = event_actor_ref.send(actor_subscribe_message).await;
     }
 
     pub fn last_order(&self) -> u64 {
@@ -112,8 +132,8 @@ impl SequencerActor {
 
         let tx_order = self.last_sequencer_info.last_order + 1;
 
-        let hash = tx_data.tx_hash();
-        let mut witness_data = hash.as_ref().to_vec();
+        let tx_hash = tx_data.tx_hash();
+        let mut witness_data = tx_hash.as_ref().to_vec();
         witness_data.extend(tx_order.to_le_bytes().iter());
         let witness_hash = h256::sha3_256_of(&witness_data);
         let tx_order_signature = Signature::sign(&witness_hash.0, &self.sequencer_key)
@@ -121,8 +141,8 @@ impl SequencerActor {
             .to_vec();
 
         // Calc transaction accumulator
-        let _tx_accumulator_root = self.tx_accumulator.append(vec![hash].as_slice())?;
-        self.tx_accumulator.flush()?;
+        let _tx_accumulator_root = self.tx_accumulator.append(vec![tx_hash].as_slice())?;
+        let tx_accumulator_unsaved_nodes = self.tx_accumulator.pop_unsaved_nodes();
 
         let tx_accumulator_info = self.tx_accumulator.get_info();
         let tx = LedgerTransaction::build_ledger_transaction(
@@ -133,18 +153,32 @@ impl SequencerActor {
             tx_accumulator_info.clone(),
         );
 
-        let sequencer_info = SequencerInfo::new(tx.sequence_info.tx_order, tx_accumulator_info);
-        self.rooch_store
-            .save_sequencer_info(sequencer_info.clone())?;
-        self.rooch_store.save_transaction(tx.clone())?;
-        info!("sequencer tx: {} order: {:?}", hash, tx_order);
+        let sequencer_info = SequencerInfo::new(tx_order, tx_accumulator_info);
+        self.rooch_store.save_sequenced_tx(
+            tx_hash,
+            tx.clone(),
+            sequencer_info.clone(),
+            tx_accumulator_unsaved_nodes,
+        )?;
+        info!(
+            "sequencer sequenced tx_hash: {} tx_order: {:?}",
+            tx_hash, tx_order
+        );
         self.last_sequencer_info = sequencer_info;
 
         Ok(tx)
     }
 }
 
-impl Actor for SequencerActor {}
+#[async_trait]
+impl Actor for SequencerActor {
+    async fn started(&mut self, ctx: &mut ActorContext) {
+        let local_actor_ref: LocalActorRef<Self> = ctx.actor_ref();
+        if let Some(event_actor) = self.event_actor.clone() {
+            let _ = self.subscribe_event(event_actor, local_actor_ref).await;
+        }
+    }
+}
 
 #[async_trait]
 impl Handler<TransactionSequenceMessage> for SequencerActor {
@@ -187,7 +221,7 @@ impl Handler<GetTxHashsMessage> for SequencerActor {
         _ctx: &mut ActorContext,
     ) -> Result<Vec<Option<H256>>> {
         let GetTxHashsMessage { tx_orders } = msg;
-        self.rooch_store.get_tx_hashs(tx_orders)
+        self.rooch_store.get_tx_hashes(tx_orders)
     }
 }
 
@@ -199,5 +233,29 @@ impl Handler<GetSequencerOrderMessage> for SequencerActor {
         _ctx: &mut ActorContext,
     ) -> Result<u64> {
         Ok(self.last_sequencer_info.last_order)
+    }
+}
+
+#[async_trait]
+impl Handler<EventData> for SequencerActor {
+    async fn handle(&mut self, msg: EventData, _ctx: &mut ActorContext) -> Result<()> {
+        if let Ok(service_status_event) = msg.data.downcast::<ServiceStatusEvent>() {
+            let service_status = service_status_event.deref().status;
+            log::warn!("SequencerActor set self status to {:?}", service_status);
+            self.service_status = service_status;
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Handler<GetSequencerInfoMessage> for SequencerActor {
+    async fn handle(
+        &mut self,
+        _msg: GetSequencerInfoMessage,
+        _ctx: &mut ActorContext,
+    ) -> Result<SequencerInfo> {
+        Ok(self.last_sequencer_info.clone())
     }
 }

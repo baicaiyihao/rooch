@@ -10,6 +10,12 @@
  * /crates/rooch-open-rpc-spec/openrpc.json
  */
 
+export interface AccumulatorInfoView {
+  accumulator_root: string
+  frozen_subtree_roots: string[]
+  num_leaves: string
+  num_nodes: string
+}
 export interface AnnotatedFunctionResultView {
   return_values?: AnnotatedFunctionReturnValueView[] | null
   vm_status: VMStatusView
@@ -42,17 +48,36 @@ export interface BalanceInfoView {
   balance: string
   coin_type: string
   decimals: number
+  icon_url?: string | null
   name: string
   supply: string
   symbol: string
+}
+export interface BitcoinStatus {
+  confirmed_block?: BlockHeightHashView | null
+  pending_block?: BlockHeightHashView | null
+}
+export interface BlockHeightHashView {
+  block_hash: string
+  block_height: string
 }
 export interface DisplayFieldsView {
   fields: {
     [key: string]: string
   }
 }
+export interface DryRunTransactionResponseView {
+  raw_output: RawTransactionOutputView
+  vm_error_info: VMErrorInfo
+}
 export type EventFilterView =
-  /** Query by event type. */
+  /** Query by event type with sender */
+  | {
+      event_type_with_sender: {
+        event_type: string
+        sender: string
+      }
+    } /** Query by event type. */
   | {
       event_type: string
     } /** Query by sender address. */
@@ -96,6 +121,7 @@ export interface EventView {
   event_type: string
 }
 export interface ExecuteTransactionResponseView {
+  error_info?: DryRunTransactionResponseView | null
   execution_info: TransactionExecutionInfoView
   output?: TransactionOutputView | null
   sequence_info: TransactionSequenceInfoView
@@ -148,13 +174,10 @@ export type InscriptionFilterView =
   /** Query by owner, support rooch address and bitcoin address */
   | {
       owner: string
-    } /** Query by inscription id, represent by bitcoin txid and index */
+    } /** Query by inscription id, represent by bitcoin {{txid}i{index}} */
   | {
-      inscription_id: {
-        index: number
-        txid: string
-      }
-    } /** Query by object id. */
+      inscription_id: string
+    } /** Query by object ids. */
   | {
       object_id: string
     }
@@ -174,20 +197,18 @@ export interface InscriptionStateView {
   value: InscriptionView
 }
 export interface InscriptionView {
-  bitcoin_txid: string
   body: string
+  charms: number
   content_encoding?: string | null
   content_type?: string | null
-  index: number
+  id: string
   inscription_number: number
-  is_curse: boolean
+  location: SatPointView
   metadata: string
   metaprotocol?: string | null
-  offset: string
-  parents: string
+  parents: string[]
   pointer?: string | null
   sequence_number: number
-  txid: string
 }
 export type KeptVMStatusView =
   | {
@@ -216,6 +237,7 @@ export interface LedgerTransactionView {
 }
 export type LedgerTxDataView =
   | {
+      bitcoin_block_hash?: string | null
       block_hash: string
       block_height: string
       chain_id: string
@@ -358,6 +380,10 @@ export type OpView =
   | {
       modify: string
     }
+export interface OutPointView {
+  txid: string
+  vout: number
+}
 /**
  * `next_cursor` points to the last item in the page; Reading with `next_cursor` will start from the
  * next item after `next_cursor` if `next_cursor` is `Some`, otherwise it will start from the first
@@ -413,6 +439,16 @@ export interface PaginatedInscriptionStateViews {
  * next item after `next_cursor` if `next_cursor` is `Some`, otherwise it will start from the first
  * item.
  */
+export interface PaginatedStateChangeSetWithTxOrderViews {
+  data: StateChangeSetWithTxOrderView[]
+  has_next_page: boolean
+  next_cursor?: string | null
+}
+/**
+ * `next_cursor` points to the last item in the page; Reading with `next_cursor` will start from the
+ * next item after `next_cursor` if `next_cursor` is `Some`, otherwise it will start from the first
+ * item.
+ */
 export interface PaginatedStateKVViews {
   data: StateKVView[]
   has_next_page: boolean
@@ -443,20 +479,56 @@ export interface QueryOptions {
   decode?: boolean
   /** If true, return query items in descending order. */
   descending?: boolean
+  /** If true, filter out all match items. */
+  filterOut?: boolean
   /** If true, result with display rendered is returned */
   showDisplay?: boolean
+}
+export interface RawTransactionOutputView {
+  gas_used: string
+  is_upgrade: boolean
+  status: KeptVMStatusView
+}
+export type RepairIndexerParamsView =
+  /** Repair by owner. */
+  | {
+      owner: string
+    } /** Repair by object ids. */
+  | {
+      object_id: string
+    }
+export interface RoochStatus {
+  root_state: RootStateView
+  sequencer_info: SequencerInfoView
+}
+export interface RootStateView {
+  size: string
+  state_root: string
+}
+export interface SatPointView {
+  offset: string
+  output: OutPointView
 }
 export interface ScriptCallView {
   args: string[]
   code: string
   ty_args: string[]
 }
+export interface SequencerInfoView {
+  last_accumulator_info: AccumulatorInfoView
+  last_order: string
+}
+export type ServiceStatus = 'active' | 'maintenance' | 'read-only-mode' | 'date-import-mode'
 /** Some specific struct that we want to display in a special way for better readability */
 export type SpecificStructView = MoveString | MoveAsciiString | string
 export interface StateChangeSetView {
   changes: ObjectChangeView[]
   global_size: string
   state_root: string
+}
+export interface StateChangeSetWithTxOrderView {
+  state_change_set: StateChangeSetView
+  tx_order: string
 }
 export interface StateKVView {
   field_key: string
@@ -467,7 +539,23 @@ export interface StateOptions {
   decode?: boolean
   /** If true, result with display rendered is returned */
   showDisplay?: boolean
+  /** The state root of remote stateDB */
+  stateRoot?: string | null
 }
+export interface Status {
+  /** The status of the Bitcoin chain */
+  bitcoin_status: BitcoinStatus
+  /** The status of the Rooch chain */
+  rooch_status: RoochStatus
+  /** The status of the rpc service */
+  service_status: ServiceStatus
+}
+export type SyncStateFilterView =
+  /** Sync by object id. */
+  | {
+      object_i_d: string
+    }
+  | 'all'
 export interface TransactionExecutionInfoView {
   event_root: string
   gas_used: string
@@ -479,9 +567,6 @@ export type TransactionFilterView =
   /** Query by sender address. */
   | {
       sender: string
-    } /** Query by multi chain original address. */
-  | {
-      original_address: string
     } /** Query by the given transaction hash. */
   | {
       tx_hashes: string[]
@@ -520,10 +605,13 @@ export interface TransactionWithInfoView {
   transaction: LedgerTransactionView
 }
 export interface TxOptions {
+  /**
+   * If true, the event is decoded and the decoded value is returned in the response. Only valid when
+   * with_output is true.
+   */
+  decode?: boolean
   /** If true, the TransactionOutput is returned in the response. */
   withOutput?: boolean
-  /** If true, the event is decoded in the response. Only valid when with_output is true.*/
-  decode?: boolean
 }
 export type UTXOFilterView =
   /** Query by owner, support rooch address and bitcoin address */
@@ -535,7 +623,7 @@ export type UTXOFilterView =
         txid: string
         vout: number
       }
-    } /** Query by object id. */
+    } /** Query by object ids. */
   | {
       object_id: string
     }
@@ -558,13 +646,20 @@ export interface UTXOView {
   /** The txid of the UTXO */
   bitcoin_txid: string
   /** Protocol seals */
-  seals: string
+  seals: /** Protocol seals */
+  {
+    [key: string]: string[]
+  }
   /** The txid of the UTXO */
   txid: string
   /** The value of the UTXO */
   value: string
   /** The vout of the UTXO */
   vout: number
+}
+export interface VMErrorInfo {
+  error_message: string
+  execution_state: string[]
 }
 export type VMStatusView =
   | 'Executed'

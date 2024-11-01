@@ -32,6 +32,30 @@ impl<Key, Value> SimpleMultiMap<Key, Value> {
     pub fn create() -> Self {
         Self { data: vec![] }
     }
+
+    pub fn new() -> Self {
+        Self { data: vec![] }
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+impl<Key, Value> Default for SimpleMultiMap<Key, Value> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<Key: PartialEq, Value> SimpleMultiMap<Key, Value> {
+    pub fn borrow(&self, key: &Key) -> Option<&Vec<Value>> {
+        self.data.iter().find(|e| &e.key == key).map(|e| &e.value)
+    }
 }
 
 impl<Key, Value> SimpleMultiMap<Key, Value>
@@ -91,5 +115,22 @@ where
         MoveStructLayout::new(vec![MoveTypeLayout::Vector(Box::new(
             MoveTypeLayout::Struct(Element::<Key, Value>::struct_layout()),
         ))])
+    }
+}
+
+impl<Key, Value> From<SimpleMultiMap<Key, Value>> for Vec<(Key, Vec<Value>)> {
+    fn from(map: SimpleMultiMap<Key, Value>) -> Self {
+        map.data.into_iter().map(|e| (e.key, e.value)).collect()
+    }
+}
+
+impl<Key, Value> From<Vec<(Key, Vec<Value>)>> for SimpleMultiMap<Key, Value> {
+    fn from(data: Vec<(Key, Vec<Value>)>) -> Self {
+        SimpleMultiMap {
+            data: data
+                .into_iter()
+                .map(|(key, value)| Element { key, value })
+                .collect(),
+        }
     }
 }

@@ -50,6 +50,8 @@ pub enum RoochError {
     SignMessageError(String),
     #[error("Transaction error: {0}")]
     TransactionError(String),
+    #[error("DryRun Transaction error: {0}")]
+    DryRunTransactionError(String),
     #[error("View function error: {0}")]
     ViewFunctionError(String),
     #[error("Import account error: {0}")]
@@ -138,7 +140,12 @@ pub enum RoochError {
 
 impl From<anyhow::Error> for RoochError {
     fn from(e: anyhow::Error) -> Self {
-        RoochError::UnexpectedError(e.to_string())
+        let message = e
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<String>>()
+            .join("\n");
+        RoochError::UnexpectedError(message)
     }
 }
 
@@ -154,6 +161,12 @@ impl From<io::Error> for RoochError {
     }
 }
 
+impl From<bitcoin::io::Error> for RoochError {
+    fn from(e: bitcoin::io::Error) -> Self {
+        RoochError::IOError(e.to_string())
+    }
+}
+
 impl From<VMError> for RoochError {
     fn from(e: VMError) -> Self {
         RoochError::VMError(e)
@@ -163,6 +176,18 @@ impl From<VMError> for RoochError {
 impl From<serde_json::Error> for RoochError {
     fn from(e: serde_json::Error) -> Self {
         RoochError::UnexpectedError(e.to_string())
+    }
+}
+
+impl From<bitcoin::psbt::Error> for RoochError {
+    fn from(e: bitcoin::psbt::Error) -> Self {
+        RoochError::CommandArgumentError(e.to_string())
+    }
+}
+
+impl From<hex::FromHexError> for RoochError {
+    fn from(e: hex::FromHexError) -> Self {
+        RoochError::CommandArgumentError(e.to_string())
     }
 }
 

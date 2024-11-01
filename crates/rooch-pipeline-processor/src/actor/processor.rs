@@ -1,19 +1,24 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
-use super::messages::{ExecuteL1BlockMessage, ExecuteL1TxMessage, ExecuteL2TxMessage};
+use super::messages::{
+    ExecuteL1BlockMessage, ExecuteL1TxMessage, ExecuteL2TxMessage, GetServiceStatusMessage,
+};
 use crate::metrics::PipelineProcessorMetrics;
-use anyhow::Result;
+use anyhow::{Error, Result};
 use async_trait::async_trait;
-use coerce::actor::{context::ActorContext, message::Handler, Actor};
+use coerce::actor::{context::ActorContext, message::Handler, Actor, LocalActorRef};
 use function_name::named;
+use moveos::moveos::VMPanicError;
+use moveos_types::state::StateChangeSetExt;
 use moveos_types::transaction::VerifiedMoveOSTransaction;
 use prometheus::Registry;
+use rooch_db::RoochDB;
+use rooch_event::actor::{EventActor, UpdateServiceStatusMessage};
 use rooch_executor::proxy::ExecutorProxy;
 use rooch_indexer::proxy::IndexerProxy;
 use rooch_proposer::proxy::ProposerProxy;
 use rooch_sequencer::proxy::SequencerProxy;
-use rooch_types::transaction::TransactionSequenceInfoV1;
 use rooch_types::{
     service_status::ServiceStatus,
     transaction::{
@@ -32,6 +37,8 @@ pub struct PipelineProcessorActor {
     pub(crate) indexer: IndexerProxy,
     pub(crate) service_status: ServiceStatus,
     pub(crate) metrics: Arc<PipelineProcessorMetrics>,
+    event_actor: Option<LocalActorRef<EventActor>>,
+    rooch_db: RoochDB,
 }
 
 impl PipelineProcessorActor {
@@ -42,6 +49,8 @@ impl PipelineProcessorActor {
         indexer: IndexerProxy,
         service_status: ServiceStatus,
         registry: &Registry,
+        event_actor: Option<LocalActorRef<EventActor>>,
+        rooch_db: RoochDB,
     ) -> Self {
         Self {
             executor,
@@ -50,6 +59,8 @@ impl PipelineProcessorActor {
             indexer,
             service_status,
             metrics: Arc::new(PipelineProcessorMetrics::new(registry)),
+            event_actor,
+            rooch_db,
         }
     }
 
@@ -63,7 +74,7 @@ impl PipelineProcessorActor {
         for order in (1..=last_order).rev() {
             let tx_hash = self
                 .sequencer
-                .get_tx_hashs(vec![order])
+                .get_tx_hashes(vec![order])
                 .await?
                 .pop()
                 .flatten()
@@ -127,12 +138,27 @@ impl PipelineProcessorActor {
             .with_label_values(&[fn_name])
             .start_timer();
         let moveos_tx = self.executor.validate_l1_block(l1_block.clone()).await?;
+        let block_height = l1_block.block.block_height;
         let ledger_tx = self
             .sequencer
             .sequence_transaction(LedgerTxData::L1Block(l1_block.block))
             .await?;
+        let tx_order = ledger_tx.sequence_info.tx_order;
         let size = moveos_tx.ctx.tx_size;
-        let result = self.execute_tx(ledger_tx, moveos_tx).await?;
+        let result = match self.execute_tx(ledger_tx, moveos_tx).await {
+            Ok(v) => v,
+            Err(err) => {
+                if is_vm_panic_error(&err) {
+                    log::error!(
+                        "Execute L1 Block failed while VM panic occurred then \
+                        set service to Maintenance mode and pause the relayer. error: {:?}, block {}, tx order {}",
+                        err, block_height, tx_order
+                    );
+                    self.update_service_status(ServiceStatus::Maintenance).await;
+                }
+                return Err(err);
+            }
+        };
 
         let gas_used = result.output.gas_used;
         self.metrics
@@ -159,10 +185,24 @@ impl PipelineProcessorActor {
         let moveos_tx = self.executor.validate_l1_tx(l1_tx.clone()).await?;
         let ledger_tx = self
             .sequencer
-            .sequence_transaction(LedgerTxData::L1Tx(l1_tx))
+            .sequence_transaction(LedgerTxData::L1Tx(l1_tx.clone()))
             .await?;
         let size = moveos_tx.ctx.tx_size;
-        let result = self.execute_tx(ledger_tx, moveos_tx).await?;
+        let tx_order = ledger_tx.sequence_info.tx_order;
+        let result = match self.execute_tx(ledger_tx, moveos_tx).await {
+            Ok(v) => v,
+            Err(err) => {
+                if is_vm_panic_error(&err) {
+                    log::error!(
+                        "Execute L1 Tx failed while VM panic occurred then \
+                        set service to Maintenance mode and pause the relayer. error: {:?}, tx order {}",
+                        err, tx_order
+                    );
+                    self.update_service_status(ServiceStatus::Maintenance).await;
+                }
+                return Err(err);
+            }
+        };
 
         let gas_used = result.output.gas_used;
         self.metrics
@@ -173,6 +213,15 @@ impl PipelineProcessorActor {
             .with_label_values(&[fn_name])
             .observe(size as f64);
         Ok(result)
+    }
+
+    async fn update_service_status(&mut self, status: ServiceStatus) {
+        self.service_status = status;
+        if let Some(event_actor) = self.event_actor.clone() {
+            let _ = event_actor
+                .send(UpdateServiceStatusMessage { status })
+                .await;
+        }
     }
 
     #[named]
@@ -190,10 +239,24 @@ impl PipelineProcessorActor {
         let moveos_tx = self.executor.validate_l2_tx(tx.clone()).await?;
         let ledger_tx = self
             .sequencer
-            .sequence_transaction(LedgerTxData::L2Tx(tx))
+            .sequence_transaction(LedgerTxData::L2Tx(tx.clone()))
             .await?;
         let size = moveos_tx.ctx.tx_size;
-        let result = self.execute_tx(ledger_tx, moveos_tx).await?;
+        let result = match self.execute_tx(ledger_tx, moveos_tx).await {
+            Ok(v) => v,
+            Err(err) => {
+                if is_vm_panic_error(&err) {
+                    let l2_tx_bcs_bytes = bcs::to_bytes(&tx)?;
+                    log::error!(
+                        "Execute L2 Tx failed while VM panic occurred and revert tx. error: {:?} tx info {}",
+                        err, hex::encode(l2_tx_bcs_bytes)
+                    );
+                    let tx_hash = tx.tx_hash();
+                    self.rooch_db.revert_tx(tx_hash)?;
+                }
+                return Err(err);
+            }
+        };
 
         let gas_used = result.output.gas_used;
         self.metrics
@@ -221,10 +284,6 @@ impl PipelineProcessorActor {
             .start_timer();
         // Add sequence info to tx context, let the Move contract can get the sequence info
         moveos_tx.ctx.add(tx.sequence_info.clone())?;
-        // We must add TransactionSequenceInfo and TransactionSequenceInfoV1 both to the tx_context because the rust code is upgraded first, then the framework is upgraded.
-        // The old framework will read the TransactionSequenceInfoV1.
-        let tx_sequence_info_v1 = TransactionSequenceInfoV1::from(tx.sequence_info.clone());
-        moveos_tx.ctx.add(tx_sequence_info_v1)?;
 
         // Then execute
         let size = moveos_tx.ctx.tx_size;
@@ -236,6 +295,12 @@ impl PipelineProcessorActor {
         // Sync latest state root from writer executor to reader executor
         self.executor
             .refresh_state(root.clone(), output.is_upgrade)
+            .await?;
+        // Save state change set is a notify call, do not block current task
+        let state_change_set_ext =
+            StateChangeSetExt::new(output.changeset.clone(), moveos_tx.ctx.sequence_number);
+        self.executor
+            .save_state_change_set(tx.sequence_info.tx_order, state_change_set_ext)
             .await?;
 
         let indexer = self.indexer.clone();
@@ -307,5 +372,26 @@ impl Handler<ExecuteL1TxMessage> for PipelineProcessorActor {
         _ctx: &mut ActorContext,
     ) -> Result<ExecuteTransactionResponse> {
         self.execute_l1_tx(msg.tx).await
+    }
+}
+
+#[async_trait]
+impl Handler<GetServiceStatusMessage> for PipelineProcessorActor {
+    async fn handle(
+        &mut self,
+        _msg: GetServiceStatusMessage,
+        _ctx: &mut ActorContext,
+    ) -> Result<ServiceStatus> {
+        Ok(self.service_status)
+    }
+}
+
+fn is_vm_panic_error(error: &Error) -> bool {
+    if let Some(vm_error) = error.downcast_ref::<VMPanicError>() {
+        match vm_error {
+            VMPanicError::VerifierPanicError(_) | VMPanicError::SystemCallPanicError(_) => true,
+        }
+    } else {
+        false
     }
 }

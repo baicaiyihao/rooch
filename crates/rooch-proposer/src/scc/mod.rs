@@ -1,29 +1,27 @@
 // Copyright (c) RoochNetwork
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::BTreeMap;
-
 use crate::actor::messages::TransactionProposeMessage;
-use moveos_types::h256;
 use moveos_types::h256::H256;
-use rooch_da::messages::Batch;
-use rooch_da::proxy::DAProxy;
+use rooch_da::actor::messages::PutDABatchMessage;
+use rooch_da::proxy::DAServerProxy;
 use rooch_types::block::Block;
+use rooch_types::transaction::LedgerTransaction;
 
 /// State Commitment Chain(SCC) is a chain of transaction state root
 /// This SCC is a mirror of the on-chain SCC
 pub struct StateCommitmentChain {
     //TODO save to the storage
-    blocks: BTreeMap<u128, Block>,
+    last_block: Option<Block>,
     buffer: Vec<TransactionProposeMessage>,
-    da: DAProxy,
+    da: DAServerProxy,
 }
 
 impl StateCommitmentChain {
     /// Create a new SCC
-    pub fn new(da_proxy: DAProxy) -> Self {
+    pub fn new(da_proxy: DAServerProxy) -> Self {
         Self {
-            blocks: BTreeMap::new(),
+            last_block: None,
             buffer: Vec::new(),
             da: da_proxy,
         }
@@ -33,19 +31,19 @@ impl StateCommitmentChain {
         self.buffer.push(tx);
     }
 
-    /// Append a new block to the SCC
-    fn append_block(&mut self, block: Block) {
-        self.blocks.insert(block.block_number, block);
+    /// Update last block of the SCC
+    fn update_last_block(&mut self, block: Block) {
+        self.last_block = Some(block);
     }
 
     /// Get the last block of the SCC
     pub fn last_block(&self) -> Option<&Block> {
-        self.blocks.values().last()
+        self.last_block.as_ref()
     }
 
     /// Get the last block number of the SCC
     pub fn last_block_number(&self) -> Option<u128> {
-        self.blocks.keys().last().copied()
+        self.last_block.as_ref().map(|block| block.block_number)
     }
 
     /// Trigger the proposer to propose a new block
@@ -79,22 +77,30 @@ impl StateCommitmentChain {
 
         // submit batch to DA server
         // TODO move batch submit out of proposer
-        let batch_data: Vec<u8> = self.buffer.iter().flat_map(|tx| tx.tx.encode()).collect();
-        // regard batch(tx list) as a blob: easy to check integrity
-        let batch_hash = h256::sha3_256_of(&batch_data);
-        if let Err(e) = self
+        let tx_list: Vec<LedgerTransaction> = self.buffer.iter().map(|tx| tx.tx.clone()).collect();
+        let batch_meta = self
             .da
-            .submit_batch(Batch {
-                block_number,
-                batch_hash,
-                data: batch_data,
+            .pub_batch(PutDABatchMessage {
+                tx_order_start: tx_list
+                    .first()
+                    .expect("tx list must not empty")
+                    .sequence_info
+                    .tx_order,
+                tx_order_end: latest_transaction.tx.sequence_info.tx_order,
+                tx_list,
             })
-            .await
-        {
-            log::error!("submit batch to DA server failed: {}", e);
-            return None;
+            .await;
+        match batch_meta {
+            Ok(batch_meta) => {
+                log::info!("submit batch to DA success: {:?}", batch_meta);
+            }
+            Err(e) => {
+                log::error!("submit batch to DA failed: {:?}", e);
+            }
         }
+        // even if the batch submission failed, new block must have been created(otherwise panic)
 
+        // TODO update block struct and add propose logic
         let new_block = Block::new(
             block_number,
             batch_size,
@@ -102,7 +108,7 @@ impl StateCommitmentChain {
             tx_accumulator_root,
             state_roots,
         );
-        self.append_block(new_block);
+        self.update_last_block(new_block);
         self.buffer.clear();
         self.last_block()
     }

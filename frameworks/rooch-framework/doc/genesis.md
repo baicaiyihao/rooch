@@ -10,7 +10,11 @@
 
 
 <pre><code><b>use</b> <a href="">0x1::option</a>;
+<b>use</b> <a href="">0x1::vector</a>;
 <b>use</b> <a href="">0x2::account</a>;
+<b>use</b> <a href="">0x2::core_addresses</a>;
+<b>use</b> <a href="">0x2::module_store</a>;
+<b>use</b> <a href="">0x2::signer</a>;
 <b>use</b> <a href="">0x2::tx_context</a>;
 <b>use</b> <a href="account.md#0x3_account">0x3::account</a>;
 <b>use</b> <a href="account_coin_store.md#0x3_account_coin_store">0x3::account_coin_store</a>;
@@ -49,4 +53,13 @@ GenesisContext is a genesis init parameters in the TxContext.
 
 
 <pre><code><b>const</b> <a href="genesis.md#0x3_genesis_ErrorGenesisInit">ErrorGenesisInit</a>: u64 = 1;
+</code></pre>
+
+
+
+<a name="0x3_genesis_GENESIS_INIT_GAS_AMOUNT"></a>
+
+
+
+<pre><code><b>const</b> <a href="genesis.md#0x3_genesis_GENESIS_INIT_GAS_AMOUNT">GENESIS_INIT_GAS_AMOUNT</a>: <a href="">u256</a> = 50000000000000000;
 </code></pre>

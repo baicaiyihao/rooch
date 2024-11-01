@@ -4,13 +4,14 @@
 // Copyright (c) The Starcoin Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::config_store::{ConfigDBStore, ConfigStore};
+use crate::config_store::{ConfigDBStore, ConfigStore, STARTUP_INFO_KEY};
 use crate::event_store::{EventDBStore, EventStore};
 use crate::state_store::statedb::StateDBStore;
-use crate::state_store::NodeDBStore;
+use crate::state_store::{nodes_to_write_batch, NodeDBStore};
 use crate::transaction_store::{TransactionDBStore, TransactionStore};
 use accumulator::inmemory::InMemoryAccumulator;
 use anyhow::{Error, Result};
+use bcs::to_bytes;
 use move_core_types::language_storage::StructTag;
 use moveos_config::store_config::RocksdbConfig;
 use moveos_config::DataDirPath;
@@ -21,12 +22,16 @@ use moveos_types::moveos_std::object::ObjectID;
 use moveos_types::startup_info::StartupInfo;
 use moveos_types::state::{FieldKey, ObjectState};
 use moveos_types::state_resolver::{StateKV, StatelessResolver};
-use moveos_types::transaction::{TransactionExecutionInfo, TransactionOutput};
+use moveos_types::transaction::{
+    RawTransactionOutput, TransactionExecutionInfo, TransactionOutput,
+};
 use once_cell::sync::Lazy;
 use prometheus::Registry;
 use raw_store::metrics::DBMetrics;
+use raw_store::rocks::batch::{WriteBatch, WriteBatchCF};
 use raw_store::rocks::RocksDB;
-use raw_store::{ColumnFamilyName, StoreInstance};
+use raw_store::traits::DBStore;
+use raw_store::{ColumnFamilyName, SchemaStore, StoreInstance, WriteOp};
 use smt::NodeReader;
 use std::fmt::{Debug, Display, Formatter};
 use std::path::Path;
@@ -138,42 +143,81 @@ impl MoveOSStore {
     pub fn handle_tx_output(
         &self,
         tx_hash: H256,
-        output: TransactionOutput,
-    ) -> Result<TransactionExecutionInfo> {
-        let state_root = output.changeset.state_root;
-        let size = output.changeset.global_size;
+        output: RawTransactionOutput,
+    ) -> Result<(TransactionOutput, TransactionExecutionInfo)> {
+        let RawTransactionOutput {
+            status,
+            mut changeset,
+            events: tx_events,
+            gas_used,
+            is_upgrade,
+            is_gas_upgrade: _,
+        } = output;
+
+        // node_store updates
+        let changed_nodes = self.state_store.change_set_to_nodes(&mut changeset)?;
+        // transaction_store updates
+        let new_state_root = changeset.state_root;
+        let size = changeset.global_size;
+        let event_ids = self.event_store.save_events(tx_events.clone())?;
+        let events = tx_events
+            .clone()
+            .into_iter()
+            .zip(event_ids)
+            .map(|(event, event_id)| Event::new_with_event_id(event_id, event))
+            .collect::<Vec<_>>();
+        let event_hashes: Vec<_> = events.iter().map(|e| e.hash()).collect();
+        let event_root = InMemoryAccumulator::from_leaves(event_hashes.as_slice()).root_hash();
+        let transaction_info = TransactionExecutionInfo::new(
+            tx_hash,
+            new_state_root,
+            size,
+            event_root,
+            gas_used,
+            status.clone(),
+        );
+        // config_store updates
+        let new_startup_info = StartupInfo::new(new_state_root, size);
 
         if log::log_enabled!(log::Level::Debug) {
             log::debug!(
-                "tx_hash: {}, state_root: {}, size: {}, gas_used: {}, status: {:?}",
+                "handle_tx_output: tx_hash: {}, state_root: {}, size: {}, gas_used: {}, status: {:?}",
                 tx_hash,
-                state_root,
+                new_state_root,
                 size,
-                output.gas_used,
-                output.status
+                gas_used,
+                status
             );
         }
-        let event_hashes: Vec<_> = output.events.iter().map(|e| e.hash()).collect();
-        let event_root = InMemoryAccumulator::from_leaves(event_hashes.as_slice()).root_hash();
 
-        let transaction_info = TransactionExecutionInfo::new(
-            tx_hash,
-            state_root,
-            size,
-            event_root,
-            output.gas_used,
-            output.status.clone(),
-        );
-        self.transaction_store
-            .save_tx_execution_info(transaction_info.clone())
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "ExecuteTransactionMessage handler save tx info failed: {:?} {}",
-                    transaction_info,
-                    e
-                )
-            })?;
-        Ok(transaction_info)
+        // atomic save updates
+        let inner_store = self.node_store.get_store().store();
+        let mut cf_batches: Vec<WriteBatchCF> = Vec::new();
+        let write_batch = nodes_to_write_batch(changed_nodes);
+        cf_batches.push(WriteBatchCF {
+            batch: write_batch,
+            cf_name: STATE_NODE_COLUMN_FAMILY_NAME.to_string(),
+        });
+        cf_batches.push(WriteBatchCF {
+            batch: WriteBatch::new_with_rows(vec![(
+                to_bytes(STARTUP_INFO_KEY).unwrap(),
+                WriteOp::Value(to_bytes(&new_startup_info).unwrap()),
+            )]),
+            cf_name: CONFIG_STARTUP_INFO_COLUMN_FAMILY_NAME.to_string(),
+        });
+        cf_batches.push(WriteBatchCF {
+            batch: WriteBatch::new_with_rows(vec![(
+                to_bytes(&tx_hash).unwrap(),
+                WriteOp::Value(to_bytes(&transaction_info).unwrap()),
+            )]),
+            cf_name: TRANSACTION_EXECUTION_INFO_COLUMN_FAMILY_NAME.to_string(),
+        });
+        // TODO: could use non-sync write here, because we could replay tx from rooch store(which has sync write after sequenced) at startup.
+        inner_store.write_cf_batch(cf_batches, true)?;
+
+        let out = TransactionOutput::new(status, changeset, events, gas_used, is_upgrade);
+
+        Ok((out, transaction_info))
     }
 }
 
@@ -259,6 +303,11 @@ impl TransactionStore for MoveOSStore {
     ) -> Result<Vec<Option<TransactionExecutionInfo>>> {
         self.get_transaction_store()
             .multi_get_tx_execution_infos(tx_hashes)
+    }
+
+    fn remove_tx_execution_info(&self, tx_hash: H256) -> Result<()> {
+        self.get_transaction_store()
+            .remove_tx_execution_info(tx_hash)
     }
 }
 

@@ -18,7 +18,7 @@ pub enum FaucetError {
     InvalidAddress(String),
 
     #[error("Timed out waiting for a coin from the gas coin pool")]
-    NoGasCoinAvailable,
+    NoRGasAvailable,
 
     #[error("Wallet Error: `{0}`")]
     Wallet(String),
@@ -32,16 +32,12 @@ pub enum FaucetError {
     #[error("Coin amounts sent are incorrect:`{0}`")]
     CoinAmountTransferredIncorrect(String),
 
-    #[error("Internal error: {0}")]
-    Internal(String),
+    #[error("{0}")]
+    Custom(String),
 }
 
 impl FaucetError {
-    pub(crate) fn internal(e: impl ToString) -> Self {
-        FaucetError::Internal(e.to_string())
-    }
-
-    pub(crate) fn transfer(e: impl ToString) -> Self {
-        FaucetError::Transfer(e.to_string())
+    pub(crate) fn custom(e: impl ToString) -> Self {
+        FaucetError::Custom(e.to_string())
     }
 }

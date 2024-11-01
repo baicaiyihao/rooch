@@ -224,6 +224,21 @@ impl AccumulatorTree {
         Ok(())
     }
 
+    /// Pop unsaved nodes for atomic updates with other operations .
+    pub fn pop_unsaved_nodes(&mut self) -> Option<Vec<AccumulatorNode>> {
+        let nodes = &mut self.update_nodes;
+        if !nodes.is_empty() {
+            let nodes_vec = nodes
+                .iter()
+                .map(|(_, node)| node.clone())
+                .collect::<Vec<AccumulatorNode>>();
+            nodes.clear();
+            return Some(nodes_vec);
+        }
+
+        None
+    }
+
     fn scan_frozen_subtree_roots(&mut self) -> Result<Vec<H256>> {
         FrozenSubTreeIterator::new(self.num_leaves)
             .map(|p| {
@@ -389,8 +404,8 @@ impl AccumulatorTree {
     ///         height - (log2(num_new_leaves) + 1) < height - 1 = root_level
     fn max_to_freeze(num_new_leaves: usize, root_level: u32) -> usize {
         precondition!(root_level as usize <= MAX_ACCUMULATOR_PROOF_DEPTH);
-        precondition!(num_new_leaves < (usize::max_value() / 2));
-        precondition!(num_new_leaves * 2 <= usize::max_value() - root_level as usize);
+        precondition!(num_new_leaves < (usize::MAX / 2));
+        precondition!(num_new_leaves * 2 <= usize::MAX - root_level as usize);
         num_new_leaves * 2 + root_level as usize
     }
 

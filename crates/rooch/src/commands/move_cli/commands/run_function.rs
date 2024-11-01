@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::cli_types::{CommandAction, FunctionArg, TransactionOptions, WalletContextOptions};
+use crate::tx_runner::{dry_run_tx_locally, execute_tx_locally_with_gas_profile};
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
 use move_command_line_common::types::ParsedStructType;
 use move_core_types::language_storage::TypeTag;
 use moveos_types::transaction::MoveAction;
-use rooch_key::key_derive::verify_password;
-use rooch_key::keystore::account_keystore::AccountKeystore;
-use rooch_rpc_api::jsonrpc_types::{ExecuteTransactionResponseView, HumanReadableDisplay};
+use rooch_rpc_api::jsonrpc_types::{
+    ExecuteTransactionResponseView, HumanReadableDisplay, KeptVMStatusView,
+};
 use rooch_types::function_arg::parse_function_arg;
 use rooch_types::{
     address::RoochAddress,
@@ -18,7 +19,6 @@ use rooch_types::{
     function_arg::ParsedFunctionId,
     transaction::rooch::RoochTransaction,
 };
-use rpassword::prompt_password;
 
 /// Run a Move function
 #[derive(Parser)]
@@ -37,7 +37,9 @@ pub struct RunFunction {
     )]
     pub type_args: Vec<ParsedStructType>,
 
-    /// Arguments combined with their type separated by spaces.
+    /// If there are multiple parameters, multiple `--args` modifications are required.
+    ///
+    /// Example: rooch move run --function 0x3::MODULE::FUNCTION --args u64:15 --args @0x42
     ///
     /// Supported types [u8, u16, u32, u64, u128, u256, bool, object_id, string, address, vector<inner_type>]
     ///
@@ -56,12 +58,20 @@ pub struct RunFunction {
     /// Return command outputs in json format
     #[clap(long, default_value = "false")]
     json: bool,
+
+    /// Run the gas profiler and output html report
+    #[clap(long, default_value = "false")]
+    gas_profile: bool,
+
+    /// Run the DryRun for this transaction
+    #[clap(long, default_value = "false")]
+    dry_run: bool,
 }
 
 #[async_trait]
 impl CommandAction<ExecuteTransactionResponseView> for RunFunction {
     async fn execute(self) -> RoochResult<ExecuteTransactionResponseView> {
-        let context = self.context.build()?;
+        let context = self.context.build_require_password()?;
         let address_mapping = context.address_mapping();
         let sender: RoochAddress = context.resolve_address(self.tx_options.sender)?.into();
         let max_gas_amount: Option<u64> = self.tx_options.max_gas_amount;
@@ -81,7 +91,22 @@ impl CommandAction<ExecuteTransactionResponseView> for RunFunction {
             })
             .collect::<Result<Vec<_>>>()?;
         let action = MoveAction::new_function_call(function_id, type_args, args);
-        match (self.tx_options.authenticator, self.tx_options.session_key) {
+
+        if self.dry_run {
+            let rooch_tx_data = context
+                .build_tx_data(sender, action.clone(), max_gas_amount)
+                .await?;
+            let dry_run_result_opt =
+                dry_run_tx_locally(context.get_client().await?, rooch_tx_data).await?;
+
+            if let Some(dry_run_result) = dry_run_result_opt {
+                if dry_run_result.raw_output.status != KeptVMStatusView::Executed {
+                    return Ok(dry_run_result.into());
+                };
+            }
+        }
+
+        let result = match (self.tx_options.authenticator, self.tx_options.session_key) {
             (Some(authenticator), _) => {
                 let tx_data = context
                     .build_tx_data(sender, action, max_gas_amount)
@@ -89,68 +114,44 @@ impl CommandAction<ExecuteTransactionResponseView> for RunFunction {
                 //TODO the authenticator usually is associated with the RoochTransactinData
                 //So we need to find a way to let user generate the authenticator based on the tx_data.
                 let tx = RoochTransaction::new(tx_data, authenticator.into());
-                context.execute(tx).await
+                context.execute(tx).await?
             }
             (_, Some(session_key)) => {
                 let tx_data = context
                     .build_tx_data(sender, action, max_gas_amount)
                     .await?;
-                let tx = if context.keystore.get_if_password_is_empty() {
-                    context
-                        .keystore
-                        .sign_transaction_via_session_key(&sender, tx_data, &session_key, None)
-                        .map_err(|e| RoochError::SignMessageError(e.to_string()))?
-                } else {
-                    let password =
-                        prompt_password("Enter the password to run functions:").unwrap_or_default();
-                    let is_verified = verify_password(
-                        Some(password.clone()),
-                        context.keystore.get_password_hash(),
-                    )?;
-
-                    if !is_verified {
-                        return Err(RoochError::InvalidPasswordError(
-                            "Password is invalid".to_owned(),
-                        ));
-                    }
-
-                    context
-                        .keystore
-                        .sign_transaction_via_session_key(
-                            &sender,
-                            tx_data,
-                            &session_key,
-                            Some(password),
-                        )
-                        .map_err(|e| RoochError::SignMessageError(e.to_string()))?
-                };
-                context.execute(tx).await
+                let tx = context
+                    .sign_transaction_via_session_key(&sender, tx_data, &session_key)
+                    .map_err(|e| RoochError::SignMessageError(e.to_string()))?;
+                context.execute(tx).await?
             }
             (None, None) => {
-                if context.keystore.get_if_password_is_empty() {
-                    context
-                        .sign_and_execute(sender, action, None, max_gas_amount)
-                        .await
-                } else {
-                    let password =
-                        prompt_password("Enter the password to run functions:").unwrap_or_default();
-                    let is_verified = verify_password(
-                        Some(password.clone()),
-                        context.keystore.get_password_hash(),
+                let tx_data = context
+                    .build_tx_data(sender, action.clone(), max_gas_amount)
+                    .await?;
+                let tx_execution_result = context.sign_and_execute(sender, tx_data.clone()).await?;
+
+                if self.gas_profile {
+                    //TODO FIXME we should use the state_root from previous tx
+                    let state_root = tx_execution_result
+                        .execution_info
+                        .state_root
+                        .0
+                        .as_bytes()
+                        .to_vec();
+
+                    execute_tx_locally_with_gas_profile(
+                        state_root,
+                        context.get_client().await?,
+                        tx_data,
                     )?;
-
-                    if !is_verified {
-                        return Err(RoochError::InvalidPasswordError(
-                            "Password is invalid".to_owned(),
-                        ));
-                    }
-
-                    context
-                        .sign_and_execute(sender, action, Some(password), max_gas_amount)
-                        .await
                 }
+
+                tx_execution_result
             }
-        }
+        };
+
+        Ok(result)
     }
 
     /// Executes the command, and serializes it to the common JSON output type
@@ -171,6 +172,21 @@ impl CommandAction<ExecuteTransactionResponseView> for RunFunction {
             output.push_str(&exe_info.to_human_readable_string(false, 0));
 
             if let Some(txn_output) = &result.output {
+                // print error info
+                if let Some(error_info) = result.clone().error_info {
+                    output.push_str(
+                        format!(
+                            "\n\n\nTransaction dry run failed:\n {:?}",
+                            error_info.vm_error_info.error_message
+                        )
+                        .as_str(),
+                    );
+                    output.push_str("\nCallStack trace:\n".to_string().as_str());
+                    for (idx, item) in error_info.vm_error_info.execution_state.iter().enumerate() {
+                        output.push_str(format!("{} {}\n", idx, item).as_str());
+                    }
+                };
+
                 // print objects changes
                 output.push_str("\n\n");
                 output.push_str(&txn_output.changeset.to_human_readable_string(false, 0));
